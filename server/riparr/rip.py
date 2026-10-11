@@ -274,6 +274,12 @@ def enqueue(force=False, expect=None):
     # for the whole identification. The click looked like it had done nothing, which is
     # the one impression an appliance cannot afford. `identifying` is a state the
     # interface already renders ("Reading the disc"), so this costs no new UI.
+    # The check at the top was a long time ago: the drive probe, a LibreDrive run on a 4K
+    # disc and the duplicate lookup all sit between it and here. A press in that window
+    # committed nothing, so a row created now would be scanned, become queued uncommitted
+    # and be left behind by a shutdown that thought nothing had started.
+    if power.holding():
+        return None, power.HOLD_MESSAGE
     job_id = db.create_job(
         title=None, disc_label=label, kind="movie", fingerprint="",
         state="identifying", phase="Reading the disc \u2014 a few minutes on an encrypted DVD",
@@ -2806,6 +2812,9 @@ def _enqueue_cd(d, force=False, expect=None):
             return existing["id"], None
 
     fmt = _music_format(s)
+    # As in enqueue(): a press during the TOC read must not be followed by a new job.
+    if power.holding():
+        return None, power.HOLD_MESSAGE
     job_id = db.create_job(
         title=None, disc_label=d.get("label") or "", kind="music", fingerprint=fp,
         output=output, state="queued", phase="Waiting to start", mode=None,

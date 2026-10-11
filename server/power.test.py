@@ -91,11 +91,11 @@ check("not a step boundary", power.at_step_boundary(), False)
 check("waiting on the job", power.status()["waiting_on"], [7])
 check("not off yet", world["off"], [])
 world["in_flight"] = []
+world["unfinished"] = []                 # the job itself has reached its final state
 world["sendable"] = [7]                  # ripped, handed to the sender, not yet picked up
 power.tick()
 check("still waiting while it sits on the card", world["off"], [])
 world["sendable"] = []
-world["unfinished"] = []                 # and the job itself has reached done
 power.tick()
 check("off once it is done", world["off"], [True])
 power.tick()

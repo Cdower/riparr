@@ -69,7 +69,7 @@ scan ends, and the shutdown waits for it; it stops counting at `needs_input`, be
 question nobody is answering must not hold the box up. Jobs that were already `queued`
 at the press wait for next boot. A double press ignores the committed set.
 
-`queued` and `needs_input` jobs do not block shutdown. They survive a reboot untouched
+Uncommitted `queued` jobs and `needs_input` jobs do not block shutdown. They survive a reboot untouched
 and resume afterwards.
 
 **The safe point in after_step, per running job:**

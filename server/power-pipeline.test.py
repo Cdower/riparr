@@ -218,6 +218,27 @@ check("power waits on nothing", power.waiting_on(), [])
 power.reset()
 db.update_job(other, state="cancelled")
 
+print("a press while enqueue is still probing the disc refuses it and leaves no row")
+fresh_share()
+power.reset()
+before = len(db.list_jobs(limit=500))
+_lookup = db.disc_by_label_size
+
+
+def lookup_then_press(*a, **kw):
+    out = _lookup(*a, **kw)
+    power.request("single")              # lands after the top check, before the row
+    return out
+
+
+db.disc_by_label_size = lookup_then_press
+os.environ["RIPARR_MOCK_LABEL"] = "WINDOW_S01_D01"
+job_id, why = rip.enqueue()
+db.disc_by_label_size = _lookup
+check("refused", (job_id, why), (None, power.HOLD_MESSAGE))
+check("no row created", len(db.list_jobs(limit=500)), before)
+power.reset()
+
 print("")
 shutil.rmtree(_tmp, ignore_errors=True)
 shutil.rmtree(SH.MOCK_SHARE_ROOT, ignore_errors=True)
