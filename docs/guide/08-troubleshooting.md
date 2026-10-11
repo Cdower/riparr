@@ -328,6 +328,41 @@ controllers that are enabled. `/boot/dtb/overlay/README.*-overlays` names the he
 for each bus. Set `param_spidev_spi_bus` to the bus your LED is wired to, and point
 `RIPARR_LED_SPI` at `/dev/spidev<bus>.0`.
 
+## Adding a power button
+
+The Banana Pro already has one: **SW1**, wired to the power chip (AXP209) rather than to
+the processor. That matters, because only the power chip can turn a box back *on* — a
+button on a CON6 GPIO pin could shut it down but never wake it. So a button on your
+enclosure goes **in parallel with SW1**, and then behaves exactly like it.
+
+### Wiring
+
+Use any momentary, normally-open push button and two thin wires.
+
+1. **Unplug the box.**
+2. Set a multimeter to continuity, with one probe on a known ground (the USB socket's
+   shield, or CON6 pin 6). Touch each of SW1's pads in turn. The pads that beep are
+   **ground**. The ones that only beep while you hold SW1 down are **PWRON**.
+3. Solder one wire to a ground pad and one to a PWRON pad, and run both to your button.
+   Polarity doesn't matter.
+4. Check before you close the case: with the box unplugged, pressing your button should
+   make PWRON beep against ground, just like pressing SW1.
+
+### What a press does
+
+| You do | The box does |
+|---|---|
+| **Press once**, idle | Shuts down cleanly. |
+| **Press once**, busy | Finishes everything it has started, all the way into your library and verified, then shuts down. Nothing new starts. Queued discs wait for next time. |
+| **Press twice** quickly, busy | Finishes the step it's on, then shuts down. A rip finishes ripping, and its upload happens after you turn it back on. An upload finishes and verifies. A TV season stops after the current episode. |
+| **Hold 1 s** while off | Turns on. |
+| **Hold 6 s** | Cuts power immediately, without shutting down cleanly. Only for when nothing else works. |
+
+While it waits, the LED **blinks white** and every page shows a banner saying what
+it's waiting on, with a **Cancel** button.
+
+If Riparr itself isn't responding, a press still turns the box off within ten seconds.
+
 ## Starting over
 
 **Settings → System → Export settings** first, if you can reach the box. Then re-flash the
