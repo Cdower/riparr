@@ -229,6 +229,105 @@ confident wrong number. It sorts itself out within a minute of the box reaching 
 internet. If it doesn't, the box can't get out to a time server: see
 [`riparr.local` doesn't load](#riparrlocal-doesnt-load) for the network side.
 
+## The LED stays dark — "No status LED detected at /dev/spidev1.0"
+
+The status LED is **not one of the LEDs on the board**. It's a single WS2812 RGB pixel
+that you wire to the header yourself (see [Wiring the LED](#wiring-the-led) below).
+Riparr never touches the board's own LEDs. On a Banana Pro, that means the green LED1 and
+the blue LED2.
+
+The LED test says "No status LED detected" when the SPI device it writes to doesn't
+exist. Two things on the box have to be true, and a stock image has neither:
+
+1. **SPI has a device node.** Riparr defaults to `/dev/spidev1.0`, which is right for the
+   Orange Pi Zero 2W. Other boards expose a different bus on their header.
+2. **Riparr is allowed to open it.** The service runs as the `riparr` user, and Armbian
+   creates the node as `root:root 0600`. There is no `spi` group until you make one.
+
+Fixed on a **Banana Pro** (Allwinner A20, Armbian 6.18) on 2026-10-11. Over SSH as `root`:
+
+```sh
+# 1. Expose SPI0 as /dev/spidev0.0. Its header pins are PI12 MOSI (pin 19),
+#    PI11 SCK (pin 23), PI10 CS0 (pin 24). Wire the LED's DIN to MOSI, pin 19.
+#    If armbianEnv.txt already has an overlays= line, append spi-spidev to it instead.
+cp -p /boot/armbianEnv.txt /boot/armbianEnv.txt.bak-led
+echo "overlays=spi-spidev"      >> /boot/armbianEnv.txt
+echo "param_spidev_spi_bus=0"   >> /boot/armbianEnv.txt
+
+# 2. Tell Riparr where the LED is. The service reads this file at start.
+echo "RIPARR_LED_SPI=/dev/spidev0.0" >> /boot/riparr.conf
+
+# 3. Let the riparr user open it.
+groupadd --system spi
+echo 'SUBSYSTEM=="spidev", GROUP="spi", MODE="0660"' > /etc/udev/rules.d/90-spidev.rules
+usermod -aG spi riparr
+
+reboot
+```
+
+To check that it worked:
+
+```sh
+ls -l /dev/spidev0.0          # crw-rw---- 1 root spi 153, 0 ...
+id riparr                     # ... 987(spi)
+```
+
+"Detected" only means that device node exists and Riparr can write to it. It can't tell
+whether an LED is actually wired.
+
+### Wiring the LED
+
+Banana Pro, header **CON6**. Count pins by their **physical numbers (1–40)**. Many
+pinout diagrams print a large "GPIO#" next to each pin, and that is WiringPi numbering,
+not the pin's position. MOSI is "GPIO 12" in WiringPi but **physical pin 19**.
+
+| WS2812 | CON6 physical pin | Diagram label |
+|---|---|---|
+| **DIN** | **19** | MOSI (SPI0), chip pin PI12 |
+| **GND** | **20** (next to 19) or 6 | Ground |
+| **5V / VCC** | **2** or 4 | 5.0 VDC Power |
+
+Leave the 3.3V pins (1 and 17) unconnected.
+
+**Orientation.** The header uses the Raspberry Pi B+ layout. Hold the board with CON6
+along the top edge and the USB and Ethernet ports on the right:
+
+- **Pin 1** is at the **left** end, the end away from the audio jack.
+- The **inner row** (toward the middle of the board) carries the **odd** pins: 1, 3,
+  5 … 39.
+- The **edge row** carries the **even** pins: 2, 4, 6 … 40.
+
+So pin 19 is the **10th pin from the left on the inner row**, with pin 20 directly
+beside it on the edge row.
+
+**Confirm that before you plug anything in.** Either check is enough:
+
+- **Look at the underside.** Pin 1's solder pad is square. All the others are round.
+- **Use a multimeter with the board powered**, measuring from a known ground such as the
+  USB shield. Pins 2 and 4 read 5V, pin 1 reads 3.3V and pin 6 reads 0V.
+
+**Two parts to add:**
+
+- **A 300–470 Ω resistor in series with DIN.** It protects both the board's pin and the
+  LED's input.
+- **A 0.1 µF capacitor across VCC and GND, right at the LED.** Many WS2812 breakout boards
+  already have one.
+
+**The data signal is 3.3V, and the LED runs on 5V.** A WS2812B powered from 5V is only
+guaranteed to read about 3.5V and above as "high". It often works anyway. If the LED
+stays dark or shows the wrong colours, put a level shifter between pin 19 and DIN. A
+74AHCT125 or a single-channel equivalent works.
+
+Then press **Test the LED** in the **Status LED** section under **System**. That button
+sends `POST /api/system/led/test`.
+The LED should go red, green, blue, then white. If the colours come out in a different
+order, the LED is RGB rather than GRB.
+
+To find the right bus on another board, `ls /sys/class/spi_master/` lists the
+controllers that are enabled. `/boot/dtb/overlay/README.*-overlays` names the header pins
+for each bus. Set `param_spidev_spi_bus` to the bus your LED is wired to, and point
+`RIPARR_LED_SPI` at `/dev/spidev<bus>.0`.
+
 ## Starting over
 
 **Settings → System → Export settings** first, if you can reach the box. Then re-flash the
