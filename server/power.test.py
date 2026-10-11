@@ -148,6 +148,29 @@ press("single")
 ok, msg = power.cancel()
 check("refused", ok, False)
 
+print("a press after it has fired")
+fresh()
+press("single")
+press("single")
+check("is left for powerkey.py's own fallback", os.path.exists(power.REQUEST), True)
+os.remove(power.REQUEST)
+
+print("the box is still up long after it fired")
+clock = {"t": 1000.0}
+power.hooks["now"] = lambda: clock["t"]
+fresh()
+press("single")
+clock["t"] += 100
+power.tick()
+check("not yet given up at 100 s", power.status()["fired"], True)
+clock["t"] += 30
+power.tick()
+st = power.status()
+check("given up after 120 s", (st["mode"], st["fired"]), (None, False))
+check("the error says so", "still running" in (st["error"] or ""), True)
+check("the work gates open again too", power.holding(), False)
+power.hooks["now"] = lambda: 1000.0
+
 print("the shutdown call itself blows up")
 fresh()
 world["door"] = None

@@ -70,10 +70,19 @@ hooks = {"in_flight": _in_flight, "identifying": _identifying, "sendable": _send
 
 _lock = threading.Lock()
 _state = {"mode": None, "since": None, "fired": False, "error": None}
+_fired_at = None
+
+# How long a fired shutdown may go on without the box going down before Riparr stops
+# believing it. The door can say yes and nothing happen; the banner must not stay
+# on "Shutting down now." for ever.
+FIRED_GIVE_UP = 120
+STILL_RUNNING = "Riparr asked the box to shut down, but it is still running."
 
 
 def reset():
+    global _fired_at
     with _lock:
+        _fired_at = None
         _state.update(mode=None, since=None, fired=False, error=None)
 
 
@@ -156,11 +165,23 @@ def _consume_request():
 
 
 def tick():
-    kind = _consume_request()
-    if kind:
-        request(kind)
+    global _fired_at
     with _lock:
         mode, fired = _state["mode"], _state["fired"]
+        if fired and hooks["now"]() - (_fired_at or 0) >= FIRED_GIVE_UP:
+            log.error("Still running %d s after shutting down was asked for.", FIRED_GIVE_UP)
+            _state.update(mode=None, since=None, fired=False, error=STILL_RUNNING)
+            _fired_at = None
+            mode = fired = None
+    # Once fired, a press is left in the file: powerkey.py sees it unanswered and powers
+    # off itself after its own timeout, which is the way out if the door said yes and
+    # nothing happened.
+    if not fired:
+        kind = _consume_request()
+        if kind:
+            request(kind)
+        with _lock:
+            mode, fired = _state["mode"], _state["fired"]
     if not mode or fired:
         return
     try:
@@ -181,6 +202,7 @@ def tick():
         if _state["mode"] != mode or _state["fired"]:
             return                        # cancelled while we were looking
         _state["fired"] = True
+        _fired_at = hooks["now"]()
     log.info("Nothing left to wait for; shutting down.")
     try:
         ok, message = hooks["poweroff"]()
