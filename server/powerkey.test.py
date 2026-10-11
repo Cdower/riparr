@@ -74,6 +74,20 @@ pk.hand_off("double", path)
 with open(path) as f:
     check("the request says what was pressed", f.read(), "double\n")
 check("no temp file left behind", os.path.exists(path + ".tmp"), False)
+pk.hand_off("single", path)
+with open(path) as f:
+    check("an existing request is replaced", f.read(), "single\n")
+os.remove(path)
+victim = os.path.join(root, "victim")
+with open(victim, "w") as f:
+    f.write("precious\n")
+os.symlink(victim, path + ".tmp")
+pk.hand_off("double", path)
+with open(victim) as f:
+    check("a planted link is not followed", f.read(), "precious\n")
+with open(path) as f:
+    check("and the request is still written", f.read(), "double\n")
+check("the planted link is gone", os.path.lexists(path + ".tmp"), False)
 check("not stale before the timeout", pk.stale(path, 100.0, 109.9), False)
 check("stale once the timeout passes with the file still there",
       pk.stale(path, 100.0, 110.0), True)

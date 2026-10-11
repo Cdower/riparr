@@ -101,10 +101,20 @@ class Presses:
 def hand_off(kind, path=REQUEST):
     """Write the request where Riparr looks for it, all at once.
 
-    A rename, so the service can never read half a word.
+    A rename, so the service can never read half a word. /run/riparr belongs to the
+    unprivileged service, so nothing in it can be trusted: the temp file is unlinked first
+    (which removes a planted symlink rather than following it) and then created with
+    O_EXCL | O_NOFOLLOW, so root never writes through a link. O_NONBLOCK stops a planted
+    FIFO from hanging the button. Losing a race raises OSError, and the caller powers off.
     """
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK,
+                 0o644)
+    with os.fdopen(fd, "w") as f:
         f.write(kind + "\n")
     os.rename(tmp, path)
 
