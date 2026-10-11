@@ -53,7 +53,7 @@ GPIO cannot power the board on, because nothing on the SoC is running to see it.
 | Input | Result |
 |---|---|
 | One or two presses, idle | Clean shutdown now (same path as the web Shut down) |
-| One press, busy | Mode **after_rip**: nothing new starts. Every job already past `queued` runs through to `done` or `failed`/`cancelled`. Then shut down |
+| One press, busy | Mode **after_rip**: nothing new starts. Every job already started when the button is pressed (identifying, ripping, transferring or verifying) is committed and runs through to `done` or `failed`/`cancelled`. Then shut down |
 | Double press (second press within 0.6 s), busy | Mode **after_step**: nothing new starts. Each running job stops at its next safe point. Then shut down |
 | Double press during after_rip | Switch to after_step |
 | Single press during after_step | No change |
@@ -62,6 +62,12 @@ GPIO cannot power the board on, because nothing on the SoC is running to see it.
 
 "Busy" means at least one job in `INTERRUPTIBLE` (`identifying`, `ripping`,
 `transferring`, `verifying`).
+
+A single press commits the jobs that have started at that moment. A committed job runs
+to a final state even if it passes through `queued` on the way, as a disc does when its
+scan ends, and the shutdown waits for it; it stops counting at `needs_input`, because a
+question nobody is answering must not hold the box up. Jobs that were already `queued`
+at the press wait for next boot. A double press ignores the committed set.
 
 `queued` and `needs_input` jobs do not block shutdown. They survive a reboot untouched
 and resume afterwards.

@@ -48,6 +48,30 @@ def _identifying():
     return [j["id"] for j in db.list_jobs(states=("identifying",), limit=50)]
 
 
+def _started():
+    """Jobs that have begun: being read, ripping, uploading or being checked.
+
+    `in_flight()` only sees a job once a worker has picked it up, which leaves out a job
+    that is mid-way between two of these states.
+    """
+    return [j["id"] for j in db.list_jobs(
+        states=("identifying", "ripping", "transferring", "verifying"), limit=50)]
+
+
+def _unfinished(ids):
+    """Which of `ids` still have somewhere to go.
+
+    A job in a final state is done with. One in `needs_input` is waiting on a question
+    nobody may be there to answer, and that must not hold the box up.
+    """
+    out = []
+    for i in ids:
+        row = db.get_job(i)
+        if row and row["state"] not in db.FINAL_STATES and row["state"] != "needs_input":
+            out.append(i)
+    return out
+
+
 def _sendable():
     """Ripped to the card and handed over, but not yet picked up by the sender.
 
@@ -66,11 +90,15 @@ def _poweroff():
 # Everything this module knows about the rest of the box comes through here, which is
 # what lets power.test.py check the decisions without a rip running.
 hooks = {"in_flight": _in_flight, "identifying": _identifying, "sendable": _sendable,
-         "poweroff": _poweroff, "now": time.time}
+         "started": _started, "unfinished": _unfinished, "poweroff": _poweroff, "now": time.time}
 
 _lock = threading.Lock()
 _state = {"mode": None, "since": None, "fired": False, "error": None}
 _fired_at = None
+# Jobs that had already started when a single press came. They are finished even if they
+# pass through `queued` on the way (a disc that was being read becomes queued the moment
+# the scan ends), because "finish what has started" is what a single press promises.
+_committed = set()
 
 # How long a fired shutdown may go on without the box going down before Riparr stops
 # believing it. The door can say yes and nothing happen; the banner must not stay
@@ -83,6 +111,7 @@ def reset():
     global _fired_at
     with _lock:
         _fired_at = None
+        _committed.clear()
         _state.update(mode=None, since=None, fired=False, error=None)
 
 
@@ -92,6 +121,15 @@ def request(kind):
         log.warning("Ignoring a power-key request that says %r.", kind)
         return
     want = AFTER_STEP if kind == "double" else AFTER_RIP
+    committed = set()
+    if want == AFTER_RIP and _state["mode"] is None:
+        # Read outside the lock: these hooks touch the database. If they fail, nothing is
+        # committed, which only means shutting down sooner and is the safe way to be wrong.
+        try:
+            committed = set(hooks["in_flight"]()) | set(hooks["started"]())
+        except Exception:
+            log.warning("Could not tell which jobs had started; none are committed.",
+                        exc_info=True)
     with _lock:
         if _state["fired"]:
             return
@@ -99,6 +137,9 @@ def request(kind):
             want = AFTER_STEP
         if want == _state["mode"]:
             return
+        if _state["mode"] is None and want == AFTER_RIP:
+            _committed.clear()
+            _committed.update(committed)
         _state.update(mode=want, since=_state["since"] or hooks["now"](), error=None)
     log.info("Power button: %s press, shutting down %s.", kind,
              "after the current step" if want == AFTER_STEP else "after the current rip")
@@ -109,6 +150,7 @@ def cancel():
         if _state["fired"]:
             return False, "The box is already shutting down."
         was = _state["mode"]
+        _committed.clear()
         _state.update(mode=None, since=None, error=None)
     if was:
         log.info("Shutdown cancelled from the web page.")
@@ -118,6 +160,19 @@ def cancel():
 def holding():
     """True while a shutdown is pending: nothing new may start."""
     return _state["mode"] is not None
+
+
+def may_start(job_id):
+    """May the rip worker begin this queued job now?
+
+    Yes when nothing is pending. Under a single press, also yes for a job that had
+    already started when the button was pressed: it is only queued because the scan
+    finished, and leaving it would power the box off with a disc half dealt with.
+    """
+    if not holding():
+        return True
+    with _lock:
+        return _state["mode"] == AFTER_RIP and job_id in _committed
 
 
 def at_step_boundary():
@@ -132,6 +187,9 @@ def waiting_on(mode=None):
     ids = set(hooks["in_flight"]()) | set(hooks["identifying"]())
     if mode == AFTER_RIP:
         ids |= set(hooks["sendable"]())
+        with _lock:
+            committed = sorted(_committed)
+        ids |= set(hooks["unfinished"](committed))
     return sorted(ids)
 
 
@@ -172,6 +230,7 @@ def tick():
             log.error("Still running %d s after shutting down was asked for.", FIRED_GIVE_UP)
             _state.update(mode=None, since=None, fired=False, error=STILL_RUNNING)
             _fired_at = None
+            _committed.clear()
             mode = fired = None
     # Once fired, a press is left in the file: powerkey.py sees it unanswered and powers
     # off itself after its own timeout, which is the way out if the door said yes and

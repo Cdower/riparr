@@ -31,7 +31,8 @@ def check(name, got, want):
         failures.append(name)
 
 
-world = {"in_flight": [], "identifying": [], "sendable": [], "off": [], "door": (True, "ok")}
+world = {"in_flight": [], "identifying": [], "sendable": [], "started": [], "unfinished": None,
+         "off": [], "door": (True, "ok")}
 
 
 def door():
@@ -43,6 +44,11 @@ power.hooks.update(
     in_flight=lambda: list(world["in_flight"]),
     identifying=lambda: list(world["identifying"]),
     sendable=lambda: list(world["sendable"]),
+    started=lambda: list(world["started"]),
+    # None means "every id asked about is still unfinished", which is what a job passing
+    # through `queued` looks like; a list says exactly which of them are.
+    unfinished=lambda ids: list(ids) if world["unfinished"] is None
+    else [i for i in ids if i in world["unfinished"]],
     poweroff=door,
     now=lambda: 1000.0,
 )
@@ -51,7 +57,8 @@ power.REQUEST = os.path.join(_tmp, "powerkey.request")
 
 def fresh(**kw):
     power.reset()
-    world.update(in_flight=[], identifying=[], sendable=[], off=[], door=(True, "ok"))
+    world.update(in_flight=[], identifying=[], sendable=[], started=[], unfinished=None,
+                 off=[], door=(True, "ok"))
     world.update(kw)
 
 
@@ -88,6 +95,7 @@ world["sendable"] = [7]                  # ripped, handed to the sender, not yet
 power.tick()
 check("still waiting while it sits on the card", world["off"], [])
 world["sendable"] = []
+world["unfinished"] = []                 # and the job itself has reached done
 power.tick()
 check("off once it is done", world["off"], [True])
 power.tick()
@@ -211,6 +219,71 @@ power.tick()
 check("powers off once it can tell", world["off"], [True])
 check("and the error is gone", power.status()["error"], None)
 power.hooks["in_flight"] = lambda: list(world["in_flight"])
+
+print("one press commits what has already started")
+fresh(started=[2])
+press("single")
+check("waiting on the started job", power.status()["waiting_on"], [2])
+world["started"] = []                    # the scan finished and the job is queued now
+power.tick()
+check("still waiting on it while it is queued", power.status()["waiting_on"], [2])
+check("no poweroff", world["off"], [])
+check("the committed job may start", power.may_start(2), True)
+check("one that was not committed may not", power.may_start(3), False)
+world["unfinished"] = []                 # it reached done
+power.tick()
+check("off once the committed job is final", world["off"], [True])
+
+print("a committed job that needs an answer does not hold the box")
+fresh(started=[2])
+press("single")
+world["started"] = []
+world["unfinished"] = []                 # needs_input counts as finished here
+power.tick()
+check("powers off", world["off"], [True])
+
+print("a double press ignores the committed set")
+fresh(started=[2])
+press("double")
+world["started"] = []
+check("the job may not start", power.may_start(2), False)
+check("power does not wait on it", power.status()["waiting_on"], [])
+power.tick()
+check("off", world["off"], [True])
+
+print("single then double drops the commitment")
+fresh(started=[2], in_flight=[5])
+press("single")
+check("committed after the single", power.may_start(2), True)
+press("double")
+check("not after the double", power.may_start(2), False)
+
+print("cancel clears the committed set")
+fresh(started=[2], in_flight=[5])
+press("single")
+power.cancel()
+world["started"] = []
+press("single")
+check("a new press commits nothing", power.may_start(2), False)
+check("nothing is held for it", power.status()["waiting_on"], [5])
+
+print("a start check that fails commits nothing")
+fresh(in_flight=[5])
+
+
+def no_started():
+    raise RuntimeError("database is locked")
+
+
+power.hooks["started"] = no_started
+press("single")
+check("still holding", power.holding(), True)
+check("nothing committed", power.may_start(2), False)
+power.hooks["started"] = lambda: list(world["started"])
+
+print("when nothing is pending anything may start")
+fresh()
+check("may_start", power.may_start(9), True)
 
 print("")
 if failures:

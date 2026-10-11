@@ -193,6 +193,31 @@ rip._send_one(db.get_job(job["id"]))
 check("finishes once cancelled", db.get_job(job["id"])["state"], "done")
 check("all six there", len(share_files()), 6)
 
+print("a disc being read when the button is pressed is ripped, not left for next boot")
+fresh_share()
+power.reset()
+for j in db.list_jobs():                 # the tests above leave rows half-way; clear them
+    if j["state"] not in db.FINAL_STATES:
+        db.update_job(j["id"], state="cancelled")
+os.environ["RIPARR_MOCK_LABEL"] = "COMMITTED_S01_D01"
+ident = db.create_job(state="identifying", disc_label="COMMITTED_S01_D01",
+                      fingerprint="fp-COMMITTED")
+other = new_job("UNCOMMITTED_S01_D01")["id"]
+power.request("single")
+db.update_job(ident, state="queued")     # the scan finished, as enqueue() does
+check("power still waits on it", ident in power.waiting_on(), True)
+picked = rip._next_startable_job()
+check("the loop picks the committed job", picked and picked["id"], ident)
+db.update_job(ident, state="cancelled")
+check("and not the queued one that was not", rip._next_startable_job(), None)
+db.update_job(ident, state="queued")
+rip._run_job(db.get_job(ident))
+check("it reaches done", db.get_job(ident)["state"], "done")
+check("the other is still queued", db.get_job(other)["state"], "queued")
+check("power waits on nothing", power.waiting_on(), [])
+power.reset()
+db.update_job(other, state="cancelled")
+
 print("")
 shutil.rmtree(_tmp, ignore_errors=True)
 shutil.rmtree(SH.MOCK_SHARE_ROOT, ignore_errors=True)

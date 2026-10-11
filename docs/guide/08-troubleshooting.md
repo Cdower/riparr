@@ -353,7 +353,7 @@ Use any momentary, normally-open push button and two thin wires.
 | You do | The box does |
 |---|---|
 | **Press once**, idle | Shuts down cleanly. |
-| **Press once**, busy | Finishes everything it has started, all the way into your library and verified, then shuts down. Nothing new starts. Queued discs wait for next time. |
+| **Press once**, busy | Finishes everything it has started, including a disc it is still reading, all the way into your library and verified, then shuts down. Nothing new starts. Queued discs wait for next time. |
 | **Press twice** quickly, busy | Finishes the step it's on, then shuts down. A rip finishes ripping, and its upload happens after you turn it back on. An upload finishes and verifies. A TV season stops after the current episode. |
 | **Hold 1 s** while off | Turns on. |
 | **Hold 6 s** | Cuts power immediately, without shutting down cleanly. Only for when nothing else works. |

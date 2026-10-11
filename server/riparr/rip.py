@@ -3385,11 +3385,12 @@ def _run_job(job):
     cancel_ev = threading.Event()
     _cancel[job_id] = cancel_ev
     try:
-        # _loop checked holding() before taking this job; a press and the next tick can
+        # _loop checked may_start() before taking this job; a press and the next tick can
         # land between that check and the line above. Until _cancel is set, in_flight()
         # cannot see the job, so the shutdown would fire with it half-way through
-        # identifying. The row is still queued, so it simply waits.
-        if power.holding():
+        # identifying. The row is still queued, so it simply waits. A job the press
+        # committed to is let through: it is finished, not refused.
+        if not power.may_start(job_id):
             return
         job = _identify(job, s)
         if job is None:
@@ -3705,13 +3706,24 @@ def _remote_name(job):
 
 # ─────────────────────────────── the worker ───────────────────────────────
 
+def _next_startable_job():
+    """The oldest queued job the worker may begin, or None.
+
+    While a shutdown is pending only the jobs a single press committed to qualify: a
+    disc that was being read when the button was pressed has just become queued, and
+    skipping it would power the box off without ripping a disc the user saw being read.
+    """
+    if not power.holding():
+        return db.next_queued_job()
+    for job in sorted(db.list_jobs(states=("queued",), limit=50), key=lambda j: j["id"]):
+        if power.may_start(job["id"]):
+            return job
+    return None
+
+
 def _loop():
     while not _stop.is_set():
-        if power.holding():
-            _wake.wait(5)
-            _wake.clear()
-            continue
-        job = db.next_queued_job()
+        job = _next_startable_job()
         if not job:
             _wake.wait(5)
             _wake.clear()
