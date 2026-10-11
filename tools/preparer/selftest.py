@@ -304,6 +304,54 @@ def test_cloud_init():
     print("  settings round-trip, open and hidden networks, idempotent cmdline")
 
 
+def test_disk_candidates():
+    """A card in a Mac's built-in SDXC reader is reported by diskutil as *internal*, and
+    `diskutil list external` leaves it out entirely. It still has to be a candidate:
+    what makes a disk the system's own is internal *and* fixed, not internal alone
+    (Etcher's `isSystem = internal && !removable`)."""
+    group("disk candidates")
+    from hostos import darwin
+    import core
+    # diskutil info -plist, as seen on a MacBook with the card in its own slot.
+    builtin_reader = {"Internal": True, "RemovableMedia": True, "Ejectable": True,
+                      "BusProtocol": "Secure Digital",
+                      "MediaName": "Built In SDXC Reader", "VirtualOrPhysical": "Physical"}
+    startup_ssd = {"Internal": True, "RemovableMedia": False, "Ejectable": False,
+                   "BusProtocol": "Apple Fabric", "MediaName": "APPLE SSD AP0512Z"}
+    usb_stick = {"Internal": False, "RemovableMedia": True, "Ejectable": True,
+                 "BusProtocol": "USB", "MediaName": "SanDisk Ultra"}
+    older_macos = dict(builtin_reader, RemovableMedia="Removable")
+    check("the built-in SD reader is not the system disk",
+          darwin.is_system_disk(builtin_reader), False)
+    check("the startup SSD is", darwin.is_system_disk(startup_ssd), True)
+    check("a USB stick is not", darwin.is_system_disk(usb_stick), False)
+    check("older macOS spells the flag as a string",
+          darwin.is_system_disk(older_macos), False)
+    check("a system image is, whatever else it says",
+          darwin.is_system_disk(dict(usb_stick, SystemImage=True)), True)
+
+    # And through core's gate: the reader's card is offered, the startup disk never is.
+    facts = [
+        {"id": "disk0", "size": 494_384_795_648, "name": "APPLE SSD AP0512Z", "model": "",
+         "protocol": "Apple Fabric", "removable_media": False, "ejectable": False,
+         "internal": True, "virtual": False, "icon": ""},
+        {"id": "disk6", "size": 256_003_538_944, "name": "Built In SDXC Reader",
+         "model": "Apple SDXC Reader Media", "protocol": "Secure Digital",
+         "removable_media": True, "ejectable": True, "internal": False,
+         "virtual": False, "icon": ""},
+    ]
+    real = core.hostos.list_block_devices
+    try:
+        core.hostos.list_block_devices = lambda: facts
+        got = core.list_disks()
+    finally:
+        core.hostos.list_block_devices = real
+    check("only the card survives", [d["id"] for d in got], ["disk6"])
+    check("and it is offered as a card", [(d["kind"], d["is_card"]) for d in got],
+          [("sd", True)])
+    print("  built-in reader, startup SSD, USB stick, older macOS string")
+
+
 def test_boards():
     group("board registry")
     import boards
@@ -319,7 +367,7 @@ def test_boards():
               set(b.get("bands", ["2.4", "5"])) <= {"2.4", "5", "6"}, True)
     check("the 2.4 GHz-only boards say so",
           sorted(b["id"] for b in boards.BOARDS if b.get("bands") == ["2.4"]),
-          ["raspberrypi3b", "raspberrypizero2w"])
+          ["bananapro", "raspberrypi3b", "raspberrypizero2w"])
     print("  %d boards, %d of them Raspberry Pi" % (len(ids), len(pis)))
 
 
@@ -328,7 +376,8 @@ def main():
           % (hostos.NAME, "supported" if hostos.CAN_WRITE else "not supported"))
     for fn in (test_contract, test_device_ids, test_partition_names,
                test_mount_matching, test_cmdline, test_sink_blocking,
-               test_partition_layout, test_cloud_init, test_boards):
+               test_partition_layout, test_cloud_init, test_disk_candidates,
+               test_boards):
         fn()
     print()
     if FAILED:

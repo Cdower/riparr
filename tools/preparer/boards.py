@@ -1,7 +1,7 @@
 """
 The boards Riparr runs on -- every SBC in the Orange Pi Zero 2W footprint that clears
-Riparr's real requirements (arm64 for MakeMKV, a USB host for the drive, enough RAM, and
-a maintained OS image). This is the single source of truth the Preparer's hardware
+Riparr's real requirements (a CPU MakeMKV ships a binary for -- arm64, or 32-bit armhf
+-- a USB host for the drive, enough RAM, and a maintained OS image). This is the single source of truth the Preparer's hardware
 dropdown reads: it is what turns "which board is this?" into "which OS image to fetch,
 and what to tell the user about it."
 
@@ -24,7 +24,8 @@ docs/design/board-support.md. Two things it settles are baked in here:
 #   https://dl.armbian.com/<slug>/<release>        -> the .img.xz          (a redirect)
 #   https://dl.armbian.com/<slug>/<release>.sha    -> "<sha256>  <filename>"
 #
-# Verified live 2026-08-22: every slug below resolves with this release token.
+# Verified live 2026-08-22: every slug below resolves with this release token
+# (bananapipro checked 2026-10-10).
 ARMBIAN_DL = "https://dl.armbian.com/%s/%s"
 # Debian trixie, minimal (no desktop), current kernel -- the build Riparr targets (D17).
 ARMBIAN_RELEASE = "Trixie_current_minimal"
@@ -116,8 +117,9 @@ BOARDS = [
     # because people already own them, and the software side costs nothing: the same
     # Raspberry Pi OS image and the same cloud-init provisioning as the Zero 2 W. All are
     # arm64 with a USB host, which is the whole of Riparr's hardware requirement. The
-    # Pi 1, 2 and Zero / Zero W are absent for the reason board-support.md gives: no
-    # 64-bit CPU, so no MakeMKV.
+    # Pi 1 and Zero / Zero W are absent because MakeMKV has no build for their ARMv6
+    # core; the Pi 2 is ARMv7 but its 1 GB on a slower core isn't worth a beta tag
+    # nobody will test.
     #
     # Power is the user's to sort out (micro-USB on the 3s, USB-C on the 4 and 5) and is
     # mentioned only where it can quietly stop a drive working.
@@ -181,6 +183,30 @@ BOARDS = [
                 "supply under 5 A the Pi 5 limits its USB ports to 600 mA, which a "
                 "bus-powered drive can exceed — use the official 27 W supply or a "
                 "drive with its own power.",
+    },
+
+    # ── older full-size Armbian boards ──
+    #
+    # Here for the same reason as the full-size Pis: people have one in a drawer. The
+    # Banana Pro is 32-bit (Allwinner A20, two Cortex-A7 cores), which is fine because
+    # makemkv-bin ships an armhf makemkvcon beside the arm64 one and its Makefile picks
+    # by `uname -m`, so makemkv-install.sh needs no special case. Armbian builds its
+    # image as a community (CSC) board -- nobody at Armbian tests it either.
+    {
+        "id": "bananapro",
+        "name": "LeMaker Banana Pro",
+        "soc": "Allwinner A20",
+        "ram": "1 GB",
+        "tier": "beta",
+        "os": "armbian",
+        "armbian_slug": "bananapipro",
+        "cost": "mid",
+        "bands": ["2.4"],
+        "note": "A full-size board from 2014, so it won't fit the Zero-sized enclosure. "
+                "It is 32-bit; MakeMKV ships a 32-bit build, but its first-time compile "
+                "on two slow cores will take a good while. Two USB 2.0 ports for the "
+                "drive, and Gigabit Ethernet beats its 2.4 GHz-only Wi-Fi. Armbian "
+                "builds its image as a community board, so it is untested there too.",
     },
 ]
 

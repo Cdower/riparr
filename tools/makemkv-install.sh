@@ -3,7 +3,8 @@
 #
 # makemkvcon links against libmakemkv.so.1 and libdriveio.so.0, which only exist
 # in the OSS package -- so the OSS build cannot be skipped even though an official
-# aarch64 makemkvcon binary ships in makemkv-bin.
+# makemkvcon binary ships in makemkv-bin (arm64 and armhf; its Makefile picks by
+# `uname -m`).
 #
 # Usage:  ./makemkv-install.sh --accept-eula [--jobs N] [--srcdir DIR]
 set -euo pipefail
@@ -224,7 +225,7 @@ grep -E "Maximum resident set size|Elapsed \(wall" "$LOG/makemkv-oss-build.time"
 sudo make install
 sudo ldconfig
 
-echo "=== 2. Install the arm64 makemkvcon binary ==="
+echo "=== 2. Install the makemkvcon binary for this CPU ($(uname -m)) ==="
 cd "$BIN"
 # The Makefile gates on tmp/eula_accepted, produced by an interactive `less` prompt
 # that cannot run headlessly. --accept-eula above is the user's acceptance.

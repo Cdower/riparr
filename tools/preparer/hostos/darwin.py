@@ -392,15 +392,31 @@ def _truthy_removable(value):
     return bool(value)
 
 
-def list_block_devices():
-    """External physical media, as facts. Classification is core's job.
+def is_system_disk(info):
+    """Is this disk the machine's own, never to be offered as a card?
 
-    `diskutil list external physical` already excludes the startup disk; the internal
-    and virtual checks below are belt and braces for a machine that reports oddly.
+    A card in a Mac's built-in SDXC reader comes back from `diskutil info` with
+    `Internal: True` -- the *reader* is internal -- and `diskutil list external` does
+    not list it at all. Internal alone therefore cannot mean "system disk": what does
+    is internal *and* fixed, which is Etcher's `isSystem = internal && !removable`.
+    `SystemImage` is the startup volume's own flag and always wins.
+    """
+    if bool(info.get("SystemImage", False)):
+        return True
+    return bool(info.get("Internal", False)) and not _truthy_removable(info.get("RemovableMedia"))
+
+
+def list_block_devices():
+    """Physical media, as facts. Classification is core's job.
+
+    `physical`, not `external physical`: the built-in SD reader is internal to macOS
+    and the external listing drops it, which hid the one slot a MacBook has. The
+    startup disk and other fixed internal disks come back too and are marked
+    `internal` by is_system_disk, which core excludes.
     """
     try:
         out = subprocess.run(
-            ["diskutil", "list", "-plist", "external", "physical"],
+            ["diskutil", "list", "-plist", "physical"],
             capture_output=True).stdout
         disks = plistlib.loads(out).get("AllDisksAndPartitions", [])
     except Exception:
@@ -424,8 +440,7 @@ def list_block_devices():
             "protocol": info.get("BusProtocol", ""),
             "removable_media": _truthy_removable(info.get("RemovableMedia")),
             "ejectable": bool(info.get("Ejectable", False)),
-            "internal": bool(info.get("Internal", False))
-                        or bool(info.get("SystemImage", False)),
+            "internal": is_system_disk(info),
             "virtual": info.get("VirtualOrPhysical") == "Virtual",
             "icon": icons.get(ident, ""),
         })
