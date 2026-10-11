@@ -27,6 +27,8 @@ KEY_POWER = 116
 EV_KEY = 1
 DOUBLE_WINDOW = 0.6
 HANDOFF_TIMEOUT = 10.0
+SCAN_EVERY = 2.0                      # seconds between looks for a late-probing device
+SCAN_TRIES = 30                       # ... for up to a minute
 REQUEST = "/run/riparr/powerkey.request"
 
 # struct input_event in the native layout: two longs of timestamp, then type, code,
@@ -53,14 +55,17 @@ def has_key(caps_text, code=KEY_POWER, bits_per_word=None):
     return bool((int(words[len(words) - 1 - idx], 16) >> bit) & 1)
 
 
-def find_power_key(sysroot="/sys"):
-    """The input device that can send KEY_POWER, or None.
+def find_power_keys(sysroot="/sys"):
+    """Every input device that can send KEY_POWER, in order. Empty if there is none.
 
     Found by capability rather than by name, so a board whose PMIC is not an AXP209
     works the same way, and a board with no power key at all simply has nothing to hold.
+    All of them, because the inhibitor stops logind listening to every one: reading only
+    the first would leave a press on another device unanswered.
     """
     pattern = os.path.join(sysroot, "class", "input", "event*", "device",
                            "capabilities", "key")
+    found = []
     for caps in sorted(glob.glob(pattern)):
         try:
             with open(caps) as f:
@@ -68,8 +73,8 @@ def find_power_key(sysroot="/sys"):
         except OSError:
             continue
         if has_key(text):
-            return "/dev/input/" + caps.split(os.sep)[-4]
-    return None
+            found.append("/dev/input/" + caps.split(os.sep)[-4])
+    return found
 
 
 class Presses:
@@ -134,12 +139,33 @@ def poweroff(why):
     subprocess.run(["systemctl", "poweroff"])
 
 
+def wait_for_keys(find=find_power_keys, sleep=time.sleep, tries=SCAN_TRIES):
+    """The power-key devices, rescanning for a while if there are none yet.
+
+    The input driver can probe after this unit starts; exiting at once would leave the
+    inhibitor gone and the button with nothing holding it.
+    """
+    devs = find()
+    for _ in range(tries):
+        if devs:
+            break
+        sleep(SCAN_EVERY)
+        devs = find()
+    return devs
+
+
 def main():
-    dev = find_power_key()
-    if not dev:
+    devs = wait_for_keys()
+    if not devs:
         log("No power key on this board; nothing to hold.")
         return 0
-    log("Holding the power key on %s" % dev)
+    files = []
+    for dev in devs:
+        try:
+            files.append(open(dev, "rb", buffering=0))
+        except OSError as e:
+            log("Could not open %s: %s" % (dev, e))
+    log("Holding the power key on %s" % ", ".join(f.name for f in files))
     presses = Presses()
     handed_at = None
 
@@ -148,39 +174,51 @@ def main():
         if not riparr_running():
             poweroff("%s press, and Riparr is not running" % kind)
             return
+        # Keep the first hand-off time while the request is still sitting there, so
+        # pressing again cannot keep postponing the fallback on a hung Riparr.
+        first = handed_at if handed_at is not None and os.path.exists(REQUEST) else now
         try:
             hand_off(kind)
         except OSError as e:
             poweroff("%s press, and Riparr could not be told: %s" % (kind, e))
             return
         log("%s press handed to Riparr" % kind.capitalize())
-        handed_at = now
+        handed_at = first
 
-    with open(dev, "rb", buffering=0) as f:
-        while True:
-            now = time.monotonic()
-            waits = [w for w in (
-                presses.timeout(now),
-                None if handed_at is None else max(0.0, handed_at + HANDOFF_TIMEOUT - now),
-            ) if w is not None]
-            ready, _, _ = select.select([f], [], [], min(waits) if waits else None)
-            now = time.monotonic()
-            if ready:
+    while files:
+        now = time.monotonic()
+        waits = [w for w in (
+            presses.timeout(now),
+            None if handed_at is None else max(0.0, handed_at + HANDOFF_TIMEOUT - now),
+        ) if w is not None]
+        ready, _, _ = select.select(files, [], [], min(waits) if waits else None)
+        now = time.monotonic()
+        for f in ready:
+            try:
                 data = f.read(EVENT.size)
-                if len(data) == EVENT.size:
-                    _sec, _usec, etype, code, value = EVENT.unpack(data)
-                    if etype == EV_KEY and code == KEY_POWER and value == 1:
-                        kind = presses.press(now)
-                        if kind:
-                            deliver(kind, now)
-            kind = presses.due(now)
-            if kind:
-                deliver(kind, now)
-            if stale(REQUEST, handed_at, now):
-                poweroff("Riparr did not answer within %d seconds" % HANDOFF_TIMEOUT)
-                handed_at = None
-            elif handed_at is not None and not os.path.exists(REQUEST):
-                handed_at = None
+            except OSError as e:
+                data = b""
+                log("Lost %s: %s" % (f.name, e))
+            if not data:                  # an empty read means the device is gone
+                files.remove(f)
+                f.close()
+                continue
+            if len(data) == EVENT.size:
+                _sec, _usec, etype, code, value = EVENT.unpack(data)
+                if etype == EV_KEY and code == KEY_POWER and value == 1:
+                    kind = presses.press(now)
+                    if kind:
+                        deliver(kind, now)
+        kind = presses.due(now)
+        if kind:
+            deliver(kind, now)
+        if stale(REQUEST, handed_at, now):
+            poweroff("Riparr did not answer within %d seconds" % HANDOFF_TIMEOUT)
+            handed_at = None
+        elif handed_at is not None and not os.path.exists(REQUEST):
+            handed_at = None
+    log("Every power-key device has gone; exiting so systemd restarts this.")
+    return 1
 
 
 if __name__ == "__main__":

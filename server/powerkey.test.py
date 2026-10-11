@@ -44,14 +44,34 @@ print("finding the device")
 root = tempfile.mkdtemp(prefix="riparr-powerkey-")
 bits = pk.struct.calcsize("l") * 8
 power_caps = " ".join(["%x" % (1 << (116 % bits))] + ["0"] * (116 // bits))
-for ev, caps in (("event0", "0"), ("event3", power_caps)):
+for ev, caps in (("event0", "0"), ("event3", power_caps), ("event5", power_caps)):
     d = os.path.join(root, "class", "input", ev, "device", "capabilities")
     os.makedirs(d)
     with open(os.path.join(d, "key"), "w") as f:
         f.write(caps + "\n")
-check("picks the one with KEY_POWER", pk.find_power_key(root), "/dev/input/event3")
+check("finds every device with KEY_POWER, in order", pk.find_power_keys(root),
+      ["/dev/input/event3", "/dev/input/event5"])
 empty = tempfile.mkdtemp(prefix="riparr-powerkey-none-")
-check("no power key, no device", pk.find_power_key(empty), None)
+check("no power key, no devices", pk.find_power_keys(empty), [])
+
+print("waiting for a late device")
+calls = {"n": 0, "slept": 0}
+
+
+def late():
+    calls["n"] += 1
+    return ["/dev/input/event2"] if calls["n"] > 3 else []
+
+
+def nap(_s):
+    calls["slept"] += 1
+
+
+check("rescans until it appears", pk.wait_for_keys(late, nap, 30), ["/dev/input/event2"])
+check("sleeping between looks", calls["slept"], 3)
+calls["slept"] = 0
+check("gives up after the tries", pk.wait_for_keys(lambda: [], nap, 5), [])
+check("five naps", calls["slept"], 5)
 
 print("one press or two")
 p = pk.Presses(window=0.6)
