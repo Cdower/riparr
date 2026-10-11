@@ -339,7 +339,7 @@ enclosure goes **in parallel with SW1**, and then behaves exactly like it.
 
 Use any momentary, normally-open push button and two thin wires.
 
-1. **Unplug the box.**
+1. **Unplug the box, and disconnect the battery if one is fitted.**
 2. Set a multimeter to continuity, with one probe on a known ground (the USB socket's
    shield, or CON6 pin 6). Touch each of SW1's pads in turn. The pads that beep are
    **ground**. The ones that only beep while you hold SW1 down are **PWRON**.
@@ -358,7 +358,7 @@ Use any momentary, normally-open push button and two thin wires.
 | **Hold 1 s** while off | Turns on. |
 | **Hold 6 s** | Cuts power immediately, without shutting down cleanly. Only for when nothing else works. |
 
-While it waits, the LED **blinks white** and every page shows a banner saying what
+While it waits, the status LED (if you've wired one) **blinks white** and every page shows a banner saying what
 it's waiting on, with a **Cancel** button.
 
 If Riparr itself isn't responding, a press still turns the box off within ten seconds.

@@ -4701,11 +4701,12 @@ $("#sys-reboot").onclick = (e) => {
 $("#sys-poweroff").onclick = (e) => {
   e.preventDefault();
   if (!confirm("Shut down Riparr now?\n\nAnything ripping or uploading stops. To start it "
-               + "again, press the power button, or unplug the cable and plug it back in."))
+               + "again, hold the power button for a second, or unplug the cable and plug it back in."))
     return;
   powerAction("poweroff", "Shutting down",
               "Shutting down. Wait for the light to settle, then it is safe to unplug. "
-              + "To start it again, plug the cable back in.");
+              + "To start it again, hold the power button for a second, or plug the "
+              + "cable back in.");
 };
 /* The power button. A press is only a wish until the rip it is waiting on finishes,
    which can be hours, so the page says so and offers the way back. */
@@ -4715,8 +4716,10 @@ async function refreshPowerBanner() {
   let p;
   try { p = await api.get("/api/system/power"); } catch (e) { return; }
   if (p.error && !p.mode) {
-    el.innerHTML = `<span>Couldn't shut down: ${esc(p.error)}</span>`;
+    el.innerHTML = `<span>Couldn't shut down: ${esc(p.error)}</span>
+      <button class="btn sm" id="power-cancel">Dismiss</button>`;
     el.classList.remove("hidden");
+    wirePowerCancel("Dismissed");
     return;
   }
   if (!p.mode) { el.classList.add("hidden"); return; }
@@ -4729,9 +4732,13 @@ async function refreshPowerBanner() {
   el.innerHTML = `<span><strong>Shutting down ${what}.</strong> ${wait}${err}</span>
     ${p.fired ? "" : `<button class="btn sm" id="power-cancel">Cancel</button>`}`;
   el.classList.remove("hidden");
+  wirePowerCancel("Shutdown cancelled");
+}
+// Cancel also clears a leftover error, so the same call dismisses the error banner.
+function wirePowerCancel(done) {
   const btn = $("#power-cancel");
   if (btn) btn.onclick = async () => {
-    try { await api.post("/api/system/power/cancel"); toast("Shutdown cancelled"); }
+    try { await api.post("/api/system/power/cancel"); toast(done); }
     catch (e) { toast(e.message, "bad"); }
     refreshPowerBanner();
   };
