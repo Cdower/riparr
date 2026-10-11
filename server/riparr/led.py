@@ -47,7 +47,7 @@ import os
 import threading
 import time
 
-from . import db, platform as P, system as SY
+from . import db, platform as P, power, system as SY
 
 log = SY.component("LED")
 
@@ -92,6 +92,7 @@ STATES = {
     "needs_you": (AMBER, "blink"),
     "no_share":  (AMBER, "blink"),        # paused, can't reach the library
     "no_wifi":   (AMBER, "blink"),        # couldn't join -- the AP-mode case
+    "shutting_down": (WHITE, "blink"),    # the power button was pressed
 }
 
 # How long "done" and "duplicate" hold before falling back to whatever is true. They
@@ -121,6 +122,10 @@ def current_state():
     outranks readiness, and "I need a human" outranks all of them, because it is the
     only state where nothing happens until somebody acts.
     """
+    # Above everything, including failure: once somebody has pressed the button, the
+    # one thing they need to know is that the box heard them and is not off yet.
+    if power.holding():
+        return "shutting_down"
     now = time.time()
     if _transient["name"] and now < _transient["until"]:
         return _transient["name"]

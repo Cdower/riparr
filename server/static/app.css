@@ -1510,6 +1510,12 @@ td.path {
 }
 .alert.warn { --alert-bd: #ec971f; --alert-bg: #3d3223; }
 .alert.bad  { --alert-bd: #d43f3a; --alert-bg: #442726; }
+/* The power button's "not off yet". Fixed, because it is about the box, not the page. */
+.power-banner {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+  z-index: 80; margin: 0; max-width: min(640px, calc(100vw - 32px));
+  display: flex; gap: 12px; align-items: center;
+}
 .alert p + p { margin-top: 4px; }
 
 .result {

@@ -19,7 +19,7 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature
 from . import (__version__, artwork as ART, backup as BK, db, drives as DRV, led as LED,
                music as MU,
                makemkv as MK,
-               notify as NT, platform as P, rip as RIP, shares as SH, system as SY,
+               notify as NT, platform as P, power as PWR, rip as RIP, shares as SH, system as SY,
                tv as TV, updater)
 
 STATIC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
@@ -100,6 +100,7 @@ def _startup():
     BK.start()
     MU.start()
     LED.start()
+    PWR.start()
 
 
 # ─────────────────────────────── auth ───────────────────────────────
@@ -385,6 +386,7 @@ def status(user=Depends(require_user)):
         "library": P.library_status(),
         "led": {"detected": LED.available(), "state": LED.current_state(),
                 "device": LED.SPI_DEV},
+        "power": PWR.status(),
     }
 
 
@@ -1608,6 +1610,21 @@ def system_power(body: PowerAction, user=Depends(require_user)):
     if not ok:
         raise HTTPException(status_code=400, detail=message)
     return {"ok": True, "action": body.action, "message": message}
+
+
+@app.get("/api/system/power")
+def system_power_status(user=Depends(require_user)):
+    """What a power-button press is waiting for. Polled by the banner every few seconds,
+    so it does not go through /api/status and its dozen hardware probes."""
+    return PWR.status()
+
+
+@app.post("/api/system/power/cancel")
+def system_power_cancel(user=Depends(require_user)):
+    ok, message = PWR.cancel()
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"ok": True, "message": message}
 
 
 @app.get("/api/artwork")

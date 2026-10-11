@@ -2959,6 +2959,7 @@ const LED_WORDS = {
   needs_you: "Amber, blinking — waiting for you",
   no_share: "Amber, blinking — can't reach your library",
   no_wifi: "Amber, blinking — no Wi-Fi",
+  shutting_down: "White, blinking — shutting down once it's safe to",
 };
 
 const SYSTEM_TABS = [
@@ -4699,12 +4700,42 @@ $("#sys-reboot").onclick = (e) => {
 };
 $("#sys-poweroff").onclick = (e) => {
   e.preventDefault();
-  if (!confirm("Shut down Riparr?\n\nThere is no power button \u2014 you will have to "
-               + "unplug the cable and plug it back in to start it again.")) return;
+  if (!confirm("Shut down Riparr now?\n\nAnything ripping or uploading stops. To start it "
+               + "again, press the power button, or unplug the cable and plug it back in."))
+    return;
   powerAction("poweroff", "Shutting down",
               "Shutting down. Wait for the light to settle, then it is safe to unplug. "
               + "To start it again, plug the cable back in.");
 };
+/* The power button. A press is only a wish until the rip it is waiting on finishes,
+   which can be hours, so the page says so and offers the way back. */
+let powerTimer = null;
+async function refreshPowerBanner() {
+  const el = $("#power-banner");
+  let p;
+  try { p = await api.get("/api/system/power"); } catch (e) { return; }
+  if (p.error && !p.mode) {
+    el.innerHTML = `<span>Couldn't shut down: ${esc(p.error)}</span>`;
+    el.classList.remove("hidden");
+    return;
+  }
+  if (!p.mode) { el.classList.add("hidden"); return; }
+  const what = p.mode === "after_step" ? "after this step" : "once this rip is in your library";
+  const n = (p.waiting_on || []).length;
+  const wait = p.fired ? "Shutting down now."
+             : n ? `Waiting on ${n} job${n === 1 ? "" : "s"}.` : "Nothing left to wait for.";
+  // A check that could not be answered leaves the press pending with an error; say so.
+  const err = p.error && !p.fired ? ` ${esc(p.error)}` : "";
+  el.innerHTML = `<span><strong>Shutting down ${what}.</strong> ${wait}${err}</span>
+    ${p.fired ? "" : `<button class="btn sm" id="power-cancel">Cancel</button>`}`;
+  el.classList.remove("hidden");
+  const btn = $("#power-cancel");
+  if (btn) btn.onclick = async () => {
+    try { await api.post("/api/system/power/cancel"); toast("Shutdown cancelled"); }
+    catch (e) { toast(e.message, "bad"); }
+    refreshPowerBanner();
+  };
+}
 window.addEventListener("hashchange", route);
 $("#gate-retry").onclick = () => location.reload();
 
@@ -4776,6 +4807,8 @@ async function boot() {
   $("#wizard").classList.add("hidden");
   $("#shell").classList.remove("hidden");
   renderChrome();
+  refreshPowerBanner();
+  if (!powerTimer) powerTimer = setInterval(refreshPowerBanner, 3000);
   // A build started during setup outlives the wizard, and the queue page is where people
   // land afterwards wondering why Auto Rip is still greyed out.
   if (state.status.makemkv && !state.status.makemkv.installed) watchMakeMKV();
