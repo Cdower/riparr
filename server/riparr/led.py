@@ -25,25 +25,27 @@ device tree all end up in the same place: `available()` is False, the thread sti
 runs, and every write is dropped. The appliance is fully functional without an LED --
 it is just less pleasant to own.
 
-## The hardware path is UNVERIFIED
+## Verified on hardware
+
+Confirmed on 2026-10-11 against a NeoPixel (WS2812B) on a Banana Pro (A20,
+`/dev/spidev0.0`); `ORDER` below is confirmed GRB. Three things only showed up there:
+spidev runs at the device-tree default (1 MHz on that board) unless the clock is set
+explicitly, and at 1 MHz every colour comes out white; the part needs at least 280 us low
+to latch, far more than the 50 us in older datasheets; and at a 5 V supply a WS2812B
+wants about 3.7 V for a 1 while the A20 drives 3.2 V, so see the wiring guide.
 
 WS2812 timing is done by **SPI**, not by the `rpi_ws281x` route, which is Broadcom
-PWM/DMA and does not exist on an Allwinner H618. Each WS2812 bit becomes three SPI
-bits at 2.4 MHz -- `110` for a 1, `100` for a 0 -- which lands each bit at 1.25 us,
-inside the part's tolerance. This is the standard technique on non-Broadcom SoCs and
-it is written from the datasheet, **not confirmed against a real LED**, because there
-was no board with one wired when it was written.
+PWM/DMA and does not exist on an Allwinner. Each WS2812 bit becomes three SPI bits at
+2.4 MHz -- `110` for a 1, `100` for a 0 -- which lands each bit at 1.25 us, inside the
+part's tolerance.
 
-Two things to check on the first board that has one, in this order:
-
-  1. `ls /dev/spidev*` -- SPI must be enabled in the device tree first
-     (`armbian-config` -> System -> Hardware -> `spi-spidev`), and this file cannot
-     do that for you.
-  2. `POST /api/system/led/test` -- walks red, green, blue, off, one second each.
-     If the colours are wrong but present, `ORDER` below is the fix; WS2812 is GRB
-     and some near-identical parts are RGB.
+SPI must be enabled in the device tree first (`armbian-config` -> System -> Hardware ->
+`spi-spidev`), and this file cannot do that for you. `POST /api/system/led/test` walks
+red, green, blue, white to prove the wiring.
 """
+import fcntl
 import os
+import struct
 import threading
 import time
 
@@ -196,6 +198,20 @@ def _triangle(t, period):
 
 _LUT = {0: 0b100, 1: 0b110}
 
+# The spidev ioctls (Linux _IOW('k', n, type)). They are the same on armhf and arm64
+# because the arguments are 1 and 4 bytes. Without setting the clock, spidev runs at the
+# device-tree default, which was 1 MHz on the Banana Pro: every bit then reads as a 1.
+SPI_IOC_WR_MODE = 0x40016b01
+SPI_IOC_WR_BITS_PER_WORD = 0x40016b03
+SPI_IOC_WR_MAX_SPEED_HZ = 0x40046b04
+SPEED_HZ = 2_400_000
+
+# Zero bytes sent before and after the pixel, as the WS2812 reset. The part needs at least
+# 280 us low to latch; 100 bytes is about 333 us at 2.4 MHz, measured on hardware (42 left
+# red showing as yellow-green). The leading run matters too: it ends whatever frame the
+# line was left in the middle of.
+RESET_BYTES = 100
+
 # Logged once, not every tick: a box with no LED must not fill its own event log.
 _warned = False
 
@@ -220,14 +236,21 @@ def available():
 def _write(colour):
     """Push one colour out, or quietly do nothing.
 
-    The trailing zero bytes are the WS2812 reset: the part latches on a low period of
-    at least 50 us, and without it the first pixel keeps the last frame's data.
+    The frame is a reset, the pixel, then a reset (see `RESET_BYTES`). The device is
+    opened per write rather than held: that keeps "plug it in while running" working, and
+    at this loop's rate it costs nothing.
     """
     if not available():
         return False
     try:
-        with open(SPI_DEV, "wb", buffering=0) as f:
-            f.write(_encode(colour) + b"\x00" * 42)
+        fd = os.open(SPI_DEV, os.O_RDWR)
+        try:
+            fcntl.ioctl(fd, SPI_IOC_WR_MODE, struct.pack("B", 0))
+            fcntl.ioctl(fd, SPI_IOC_WR_BITS_PER_WORD, struct.pack("B", 8))
+            fcntl.ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, struct.pack("I", SPEED_HZ))
+            os.write(fd, b"\x00" * RESET_BYTES + _encode(colour) + b"\x00" * RESET_BYTES)
+        finally:
+            os.close(fd)
         return True
     except OSError as e:
         # Once, not every second: a missing LED must not fill the event log.

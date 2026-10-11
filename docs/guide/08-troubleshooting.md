@@ -285,9 +285,19 @@ not the pin's position. MOSI is "GPIO 12" in WiringPi but **physical pin 19**.
 |---|---|---|
 | **DIN** | **19** | MOSI (SPI0), chip pin PI12 |
 | **GND** | **20** (next to 19) or 6 | Ground |
-| **5V / VCC** | **2** or 4 | 5.0 VDC Power |
+| **VCC** | **1** (3.3 V), or 2 / 4 (5 V) with a level shifter | See below |
 
-Leave the 3.3V pins (1 and 17) unconnected.
+There are two ways to power the LED:
+
+- **Simplest: VCC on pin 1 (3.3 V).** Verified to work with a NeoPixel. It is slightly
+  under the WS2812B's rated 3.5 V, so the LED is dimmer and blue looks pale.
+- **Full brightness: VCC on pin 2 or 4 (5 V), only with a level shifter.** Put a 74AHCT125
+  or SN74AHCT1G125, powered from 5 V, between pin 19 and DIN. Without it, the 3.3 V data
+  is below the LED's threshold and the first pixel just shows garbage white.
+
+Leave pin 17 (also 3.3 V) unconnected. If you have a strip, cut it down to a single pixel.
+Riparr drives only the first one, and on 3.3 V the others should not draw from the
+board's 3.3 V rail.
 
 **Orientation.** The header uses the Raspberry Pi B+ layout. Hold the board with CON6
 along the top edge and the USB and Ethernet ports on the right:
@@ -313,10 +323,9 @@ beside it on the edge row.
 - **A 0.1 µF capacitor across VCC and GND, right at the LED.** Many WS2812 breakout boards
   already have one.
 
-**The data signal is 3.3V, and the LED runs on 5V.** A WS2812B powered from 5V is only
-guaranteed to read about 3.5V and above as "high". It often works anyway. If the LED
-stays dark or shows the wrong colours, put a level shifter between pin 19 and DIN. A
-74AHCT125 or a single-channel equivalent works.
+**Why 5 V needs a level shifter.** Measured on a Banana Pro: with a 5.3 V supply the
+WS2812B needs about 3.7 V to read a logic 1, and the board's MOSI pin gives about 3.2 V,
+so the LED read nothing. Powering the pixel from the 3.3 V rail made the data readable.
 
 Then press **Test the LED** in the **Status LED** section under **System**. That button
 sends `POST /api/system/led/test`.
