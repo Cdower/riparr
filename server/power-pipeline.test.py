@@ -83,8 +83,19 @@ check("and gone after", rip.in_flight(), [])
 print("a double press during a season rip parks it after the rip")
 power.reset()
 job = new_job("PARKED_S02_D01")
-power.request("double")
+_identify = rip._identify
+
+
+def identify_then_press(j, s):
+    # The press arrives while the rip is under way, as it does on the box.
+    out = _identify(j, s)
+    power.request("double")
+    return out
+
+
+rip._identify = identify_then_press
 rip._run_job(job)
+rip._identify = _identify
 parked = db.get_job(job["id"])
 check("left transferring", parked["state"], "transferring")
 check("nothing sent yet", parked["bytes_sent"] or 0, 0)
@@ -118,6 +129,51 @@ check("deferred after the first episode", raised, True)
 check("one episode in the library", len(share_files()), 1)
 check("and marked done", [e["state"] for e in db.episode_plan(db.get_job(job["id"]))
                           ["episodes"]][:1], ["done"])
+
+print("a cancel at the step boundary is a cancel, not a park")
+fresh_share()
+power.reset()
+job = new_job("CANCELBOUND_S04_D01")
+s = rip._settings()
+job = rip._identify(job, s)
+base = rip._rip_season(job, s, threading.Event())
+db.update_job(job["id"], state="transferring", bytes_sent=0)
+power.request("double")
+
+
+class LateCancel(threading.Event):
+    """Not cancelled until the first episode is marked done, so the cancel lands exactly
+    on the boundary where the step-boundary check also fires."""
+
+    def is_set(self):
+        eps = db.episode_plan(db.get_job(job["id"]))["episodes"]
+        return eps[0].get("state") == "done"
+
+
+try:
+    rip._transfer_season(job, s, base, LateCancel())
+    got = "returned"
+except rip.Cancelled:
+    got = "Cancelled"
+except rip.Deferred:
+    got = "Deferred"
+check("Cancelled wins over Deferred", got, "Cancelled")
+power.reset()
+
+print("_park leaves a finished job alone")
+done_job = new_job("PARKFINAL_S01_D01")
+db.update_job(done_job["id"], state="cancelled")
+rip._park(done_job["id"], "test")
+check("still cancelled", db.get_job(done_job["id"])["state"], "cancelled")
+
+print("a job started just as the hold lands is left queued")
+power.reset()
+job = new_job("RACE_S01_D01")
+power.request("single")
+rip._run_job(job)
+check("still queued", db.get_job(job["id"])["state"], "queued")
+check("and no cancel event left behind", job["id"] in rip._cancel, False)
+power.reset()
 
 print("_send_one parks a deferred season rather than failing it")
 fresh_share()

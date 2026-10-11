@@ -2242,10 +2242,12 @@ def _transfer_season(job, s, base, cancel_ev):
         # Each episode is sent, verified and marked done before the next, so the gap
         # between two of them is a safe point. The first is always sent: a double press
         # means finish this step, and starting the season is the step.
-        if n > 1 and not direct and power.at_step_boundary():
-            raise Deferred()
+        # A cancel is checked first: cancel() has already deleted the staging files, so
+        # parking the job would resurrect one that can only fail on the next boot.
         if cancel_ev.is_set():
             raise Cancelled()
+        if n > 1 and not direct and power.at_step_boundary():
+            raise Deferred()
         local = row.get("path")
         if not local or not os.path.exists(local):
             raise RipFailed("%s went missing from the card before it could be sent."
@@ -3368,6 +3370,10 @@ def _park(job_id, why):
     `transferring` with `bytes_sent=0` and `local_path` set is what `next_sending_job`
     takes and what `recover()` keeps, so this is the state a clean stop has to land in.
     """
+    row = db.get_job(job_id)
+    if row and row["state"] in db.FINAL_STATES:
+        log.info("Job %d: %s, but it has already finished; leaving it.", job_id, why)
+        return
     log.info("Job %d: %s; the rest happens after the restart.", job_id, why)
     db.update_job(job_id, state="transferring", bytes_sent=0,
                   phase="Waiting to send to your library")
@@ -3379,6 +3385,12 @@ def _run_job(job):
     cancel_ev = threading.Event()
     _cancel[job_id] = cancel_ev
     try:
+        # _loop checked holding() before taking this job; a press and the next tick can
+        # land between that check and the line above. Until _cancel is set, in_flight()
+        # cannot see the job, so the shutdown would fire with it half-way through
+        # identifying. The row is still queued, so it simply waits.
+        if power.holding():
+            return
         job = _identify(job, s)
         if job is None:
             return                       # needs_input, skipped, or ejected
