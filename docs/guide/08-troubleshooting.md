@@ -327,6 +327,64 @@ beside it on the edge row.
 WS2812B needs about 3.7 V to read a logic 1, and the board's MOSI pin gives about 3.2 V,
 so the LED read nothing. Powering the pixel from the 3.3 V rail made the data readable.
 
+### Wiring a 74AHCT125 level shifter (full brightness on 5 V)
+
+The 74AHCT125 is four separate buffers in one 14-pin chip. Powered from 5 V, its inputs
+read anything above 2.0 V as a 1, and its outputs swing a full 5 V. One buffer turns the
+board's 3.3 V data into a signal the LED reads reliably at 5 V.
+
+**Get the right chip.** It must be **AHCT** or **HCT** (74AHCT125 or 74HCT125). A plain
+74HC125 or 74AHC125 needs about 3.5 V on its input, which is the same problem you started
+with.
+
+**Unplug the box first.** Then move the LED's VCC wire off pin 1, because the LED goes back
+on 5 V.
+
+Pin 1 of the chip is marked by a notch or dot at one end. Pins count down that side 1–7,
+then back up the other side 8–14.
+
+| 74AHCT125 pin | Name | Connect to |
+|---|---|---|
+| **14** | VCC | CON6 **pin 2** (5 V) |
+| **7** | GND | CON6 **pin 6** (ground) |
+| **1** | 1OE | **Ground.** It enables buffer 1, and it is active low |
+| **2** | 1A (input) | CON6 **pin 19** (MOSI) |
+| **3** | 1Y (output) | A **330–470 Ω resistor**, then the LED's **DIN** |
+| 4, 10, 13 | 2OE, 3OE, 4OE | **5 V.** This switches the three unused buffers off |
+| 5, 9, 12 | 2A, 3A, 4A | **Ground.** Unused inputs must not float |
+| 6, 8, 11 | 2Y, 3Y, 4Y | Nothing |
+
+The LED itself:
+
+| LED | Connect to |
+|---|---|
+| **VCC** | CON6 **pin 4** (5 V) |
+| **GND** | CON6 **pin 20** (or any ground) |
+| **DIN** | Through the resistor, from chip pin 3 |
+
+Also:
+
+- **Put a 0.1 µF capacitor across chip pins 14 and 7**, as close to the chip as you can.
+- **Keep the 0.1 µF capacitor at the LED**, across its VCC and GND.
+- **Every ground must be common:** the board's, the chip's and the LED's. A level shifter
+  with its own separate ground does nothing.
+
+**Single-buffer version.** An SN74AHCT1G125 (5-pin SOT-23) is the same thing in one gate:
+
+| Pin | Connect to |
+|---|---|
+| 5 (VCC) | 5 V |
+| 3 (GND) | Ground |
+| 1 (OE) | Ground |
+| 2 (A) | Pin 19 |
+| 4 (Y) | The resistor, then DIN |
+
+There are no unused inputs to tie off.
+
+**Check it before closing the case.** Power on and press **Test the LED**. Red, green,
+blue and white should now be full brightness, with a proper blue. If the LED shows garbage
+white, the chip is probably an HC/AHC part, or OE (pin 1) isn't grounded.
+
 Then press **Test the LED** in the **Status LED** section under **System**. That button
 sends `POST /api/system/led/test`.
 The LED should go red, green, blue, then white. If the colours come out in a different
