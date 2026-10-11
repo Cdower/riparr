@@ -37,7 +37,7 @@ import subprocess
 import threading
 import time
 
-from . import db, tv, led as LED, notify, platform as P, shares as SH, system as SY
+from . import db, tv, led as LED, notify, platform as P, power, shares as SH, system as SY
 from . import backup as BK, music as MU
 
 log = SY.component("Rip")
@@ -141,6 +141,11 @@ def _watch_discs():
             # switch flipped. Somebody doing exactly the right thing would be met with
             # silence and no way to tell which of the two steps had failed.
             sig = (_disc_signature(drives), bool(db.get("auto_rip")))
+            # Before `seen` is updated, on purpose: a disc that goes in while a
+            # shutdown is pending is still "new" if the shutdown is cancelled, so Auto
+            # Rip takes it then. A disc already dealt with is not new and is left alone.
+            if power.holding():
+                continue
             if sig == seen:
                 continue
             seen = sig
@@ -194,6 +199,10 @@ def enqueue(force=False, expect=None):
     is a fingerprint the caller believes is in the tray -- Re-rip supplies it so that
     asking to re-rip one film cannot start a rip of whatever disc actually went in.
     """
+    # Covers the API and Auto Rip alike. A shutdown is waiting for work to *finish*;
+    # starting more would push the moment it can happen out by hours.
+    if power.holding():
+        return None, power.HOLD_MESSAGE
     drives = P.optical_drives()
     d = next((x for x in drives if x.get("present")), None)
     if not d:
@@ -2230,6 +2239,11 @@ def _transfer_season(job, s, base, cancel_ev):
 
     pending = [r for r in rows if r.get("state") != "done"]
     for n, row in enumerate(pending, 1):
+        # Each episode is sent, verified and marked done before the next, so the gap
+        # between two of them is a safe point. The first is always sent: a double press
+        # means finish this step, and starting the season is the step.
+        if n > 1 and not direct and power.at_step_boundary():
+            raise Deferred()
         if cancel_ev.is_set():
             raise Cancelled()
         local = row.get("path")
@@ -3335,6 +3349,30 @@ class Cancelled(Exception):
     pass
 
 
+class Deferred(Exception):
+    """Stopped at a safe point because the power button asked for it.
+
+    Not a failure and not a cancellation: the job is parked exactly where a reboot would
+    have left it, so the sender picks it up afterwards.
+    """
+
+
+def in_flight():
+    """Jobs a worker is inside right now. `power` waits on these."""
+    return sorted(_cancel.keys())
+
+
+def _park(job_id, why):
+    """Leave a job on the card for the sender, because a shutdown is waiting on it.
+
+    `transferring` with `bytes_sent=0` and `local_path` set is what `next_sending_job`
+    takes and what `recover()` keeps, so this is the state a clean stop has to land in.
+    """
+    log.info("Job %d: %s; the rest happens after the restart.", job_id, why)
+    db.update_job(job_id, state="transferring", bytes_sent=0,
+                  phase="Waiting to send to your library")
+
+
 def _run_job(job):
     s = _settings()
     job_id = job["id"]                   # `job` is rebound below; the id must not be
@@ -3380,6 +3418,11 @@ def _run_job(job):
             base = _rip_season(job, s, cancel_ev)
             LED.announce("done")
             P.eject()
+            # Direct mode wrote the episodes straight into the library, so there is no
+            # card copy to come back to: the step is the whole job.
+            if power.at_step_boundary() and not use_direct(s, "tv"):
+                _park(job["id"], "the season is ripped")
+                return
             transport, folder, base = _transfer_season(job, s, base, cancel_ev)
             _finish_season(job, s, transport, folder, base)
             return
@@ -3415,6 +3458,9 @@ def _run_job(job):
             _verify(job, s, transport, name, local_path)
         _finish(job, s, transport, name, local_path)
 
+    except Deferred:
+        db.stage_end(job_id)
+        _park(job_id, "stopped between episodes")
     except Cancelled:
         log.info("Job %d cancelled.", job_id)
         db.stage_end(job_id)
@@ -3649,6 +3695,10 @@ def _remote_name(job):
 
 def _loop():
     while not _stop.is_set():
+        if power.holding():
+            _wake.wait(5)
+            _wake.clear()
+            continue
         job = db.next_queued_job()
         if not job:
             _wake.wait(5)
@@ -3671,6 +3721,12 @@ def _send_loop():
     their next disc in hand. The rip worker hands over here the moment the tray opens.
     """
     while not _stop.is_set():
+        # Only on a double press. A single press is waiting for rips to reach the
+        # library, so the sender keeps draining the card.
+        if power.at_step_boundary():
+            _send_wake.wait(5)
+            _send_wake.clear()
+            continue
         job = db.next_sending_job()
         if not job:
             _send_wake.wait(5)
@@ -3713,6 +3769,9 @@ def _send_one(job):
             transport, name, local = _transfer(job, s, local, cancel_ev)
             _verify(job, s, transport, name, local)
         _finish(job, s, transport, name, local, sent_from_card=True)
+    except Deferred:
+        db.stage_end(job["id"])
+        _park(job["id"], "stopped between episodes")
     except Cancelled:
         log.info("Job %d cancelled while sending.", job["id"])
         db.stage_end(job["id"])
