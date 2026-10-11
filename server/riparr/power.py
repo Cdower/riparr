@@ -35,6 +35,7 @@ REQUEST = os.path.join(P.RUN_DIR, "powerkey.request")
 REQUEST = os.environ.get("RIPARR_POWER_REQUEST", REQUEST)
 AFTER_RIP = "after_rip"
 AFTER_STEP = "after_step"
+CHECK_FAILED = "Riparr could not tell what is still running, so it has not shut down."
 HOLD_MESSAGE = ("Riparr is shutting down. Cancel that on the web page to rip this disc.")
 
 
@@ -128,7 +129,13 @@ def waiting_on(mode=None):
 def status():
     with _lock:
         st = dict(_state)
-    st["waiting_on"] = waiting_on(st["mode"]) if st["mode"] else []
+    st["waiting_on"] = []
+    if st["mode"]:
+        try:
+            st["waiting_on"] = waiting_on(st["mode"])
+        except Exception:
+            # The status endpoint feeds the banner; it must never fail because a check did.
+            st["error"] = st["error"] or CHECK_FAILED
     return st
 
 
@@ -154,14 +161,34 @@ def tick():
         request(kind)
     with _lock:
         mode, fired = _state["mode"], _state["fired"]
-    if not mode or fired or waiting_on(mode):
+    if not mode or fired:
+        return
+    try:
+        waiting = waiting_on(mode)
+    except Exception:
+        # Powering off on a guess could cut a rip off, so an unknown state means wait.
+        log.exception("Could not tell what is still running; trying again in a second.")
+        with _lock:
+            if _state["mode"] == mode:
+                _state["error"] = CHECK_FAILED
+        return
+    with _lock:
+        if _state["mode"] == mode and _state["error"] == CHECK_FAILED:
+            _state["error"] = None
+    if waiting:
         return
     with _lock:
         if _state["mode"] != mode or _state["fired"]:
             return                        # cancelled while we were looking
         _state["fired"] = True
     log.info("Nothing left to wait for; shutting down.")
-    ok, message = hooks["poweroff"]()
+    try:
+        ok, message = hooks["poweroff"]()
+    except Exception as e:
+        # Left as it was, fired would stay set and strand the box in a shutdown that
+        # never comes and cannot be cancelled.
+        log.exception("Shutting down raised.")
+        ok, message = False, "Riparr could not shut down: %s" % e
     if not ok:
         log.error("Could not shut down: %s", message)
         with _lock:

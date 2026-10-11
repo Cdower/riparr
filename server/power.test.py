@@ -148,6 +148,47 @@ press("single")
 ok, msg = power.cancel()
 check("refused", ok, False)
 
+print("the shutdown call itself blows up")
+fresh()
+world["door"] = None
+
+
+def boom():
+    raise RuntimeError("no dbus")
+
+
+power.hooks["poweroff"] = boom
+press("single")
+st = power.status()
+check("mode clears", (st["mode"], st["fired"]), (None, False))
+check("the error says why", "no dbus" in (st["error"] or ""), True)
+check("the work gates open again", power.holding(), False)
+power.hooks["poweroff"] = door
+
+print("a check that cannot be answered")
+fresh(in_flight=[4])
+bad = {"on": True}
+
+
+def flaky():
+    if bad["on"]:
+        raise RuntimeError("database is locked")
+    return list(world["in_flight"])
+
+
+power.hooks["in_flight"] = flaky
+press("single")
+st = power.status()
+check("mode stays pending", st["mode"], power.AFTER_RIP)
+check("status reports the error and no ids", (bool(st["error"]), st["waiting_on"]), (True, []))
+check("does not power off on a guess", world["off"], [])
+bad["on"] = False
+world["in_flight"] = []
+power.tick()
+check("powers off once it can tell", world["off"], [True])
+check("and the error is gone", power.status()["error"], None)
+power.hooks["in_flight"] = lambda: list(world["in_flight"])
+
 print("")
 if failures:
     print("%d FAILED: %s" % (len(failures), ", ".join(failures)))
