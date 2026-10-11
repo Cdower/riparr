@@ -46,6 +46,12 @@ if [ -f "$PKG/netwatch-settings.py" ]; then
             "$LIB/netwatch-settings.py"
 fi
 
+# The power button's root half. Run as an argument to the system python3, never the
+# venv: it must keep working when /opt/riparr is half-updated or broken.
+if [ -f "$PKG/powerkey.py" ]; then
+    install -o root -g root -m 0644 "$PKG/powerkey.py" "$LIB/powerkey.py"
+fi
+
 # The MakeMKV installer and the manifest it reads go together, and both are root's.
 # The installer used to be placed only by install.sh, so a web update never refreshed
 # it; and it looked for the manifest at ../packaging beside itself -- which, run from
@@ -88,6 +94,7 @@ for u in riparr.service \
          riparr-usbhost.service riparr-usbhost.path \
          riparr-wifi.service riparr-wifi.path \
          riparr-netwatch.service \
+         riparr-powerkey.service \
          riparr-provision.service riparr-provision.path \
          riparr-restart.service riparr-restart.path \
          riparr-remount.service riparr-remount.path \
@@ -131,6 +138,14 @@ if [ -f /etc/systemd/system/riparr-netwatch.service ]; then
     else
         say "Wi-Fi watchdog already running (left alone)"
     fi
+fi
+
+# Restarted rather than left alone: it holds no state worth keeping, and an update to
+# powerkey.py does nothing until the process running the old one is replaced.
+if [ -f /etc/systemd/system/riparr-powerkey.service ]; then
+    systemctl enable --quiet riparr-powerkey.service 2>/dev/null || true
+    systemctl restart riparr-powerkey.service 2>/dev/null || true
+    say "power button handler started"
 fi
 
 # DVD backups need dvdbackup and libdvdcss (see packaging/dvdtools-install.sh). Asked

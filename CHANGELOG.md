@@ -8,6 +8,16 @@ bother updating.
 
 ---
 
+## Unreleased
+
+**On boards with a power button (the Banana Pro's SW1), it works, and it waits for your
+rip.** Press it once and the box finishes what it's doing — all the way into your library
+— then turns off. Press it twice and it stops after the current step instead, and anything
+it stopped is finished after you turn it back on. Hold it for a second to turn it back on.
+The LED blinks white while it waits, and the web page shows what it's waiting for, with a
+button to cancel. A button on your enclosure can do the same: see *Adding a power button*
+in Troubleshooting.
+
 ## 0.6.1
 
 **Pick your format and quality for music CDs.** Settings → Ripping → Music CDs now offers

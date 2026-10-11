@@ -1183,6 +1183,7 @@ SYSTEM_COMPONENTS = [
     ("riparr-reboot.service",   "unit",   "Restart from the web page",          True),
     ("riparr-poweroff.path",    "unit",   "Shut down from the web page",        True),
     ("riparr-poweroff.service", "unit",   "Shut down from the web page",        True),
+    ("riparr-powerkey.service", "unit",   "The power button",                   True),
     ("riparr-usbhost.path",     "unit",   "The USB-C socket fix",               True),
     ("riparr-usbhost.service",  "unit",   "The USB-C socket fix",               True),
     ("wifi-apply.sh",           "script", "Changing Wi-Fi networks",            True),
@@ -1194,6 +1195,7 @@ SYSTEM_COMPONENTS = [
     ("cdtools-install.sh",      "script", "Installing the music CD tools",      True),
     ("netwatch.sh",             "script", "Recovers Wi-Fi that dies silently",  True),
     ("netwatch-settings.py",    "script", "Your Wi-Fi recovery settings",       True),
+    ("powerkey.py",             "script", "The power button",                   True),
     ("mount-library.sh",        "script", "Mounts your library share",          True),
     ("apply-system.sh",         "script", "Installs the parts on this list",    True),
 ]

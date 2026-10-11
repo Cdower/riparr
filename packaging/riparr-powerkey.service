@@ -1,0 +1,24 @@
+[Unit]
+Description=Riparr power button — shut down when it is safe to
+Documentation=https://github.com/jackharvest/riparr
+After=systemd-logind.service
+
+[Service]
+Type=simple
+# The inhibitor is what stops logind powering off on the key. It lasts exactly as long
+# as powerkey.py does, so if this unit stops, the button goes back to logind's
+# immediate poweroff rather than to nothing.
+ExecStart=/usr/bin/systemd-inhibit --what=handle-power-key --mode=block \
+          --who=Riparr --why="Riparr decides when it is safe to shut down" \
+          /usr/bin/python3 /usr/local/lib/riparr/powerkey.py
+# A board with no power key exits 0, and that is final: on-failure does not restart it.
+Restart=on-failure
+RestartSec=5
+
+# Not sandboxed, for the same reason as riparr-netwatch.service: it runs systemctl
+# poweroff, which a private namespace would let succeed and change nothing.
+ProtectHome=yes
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

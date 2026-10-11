@@ -285,9 +285,19 @@ not the pin's position. MOSI is "GPIO 12" in WiringPi but **physical pin 19**.
 |---|---|---|
 | **DIN** | **19** | MOSI (SPI0), chip pin PI12 |
 | **GND** | **20** (next to 19) or 6 | Ground |
-| **5V / VCC** | **2** or 4 | 5.0 VDC Power |
+| **VCC** | **1** (3.3 V), or 2 / 4 (5 V) with a level shifter | See below |
 
-Leave the 3.3V pins (1 and 17) unconnected.
+There are two ways to power the LED:
+
+- **Simplest: VCC on pin 1 (3.3 V).** Verified to work with a NeoPixel. It is slightly
+  under the WS2812B's rated 3.5 V, so the LED is dimmer and blue looks pale.
+- **Full brightness: VCC on pin 2 or 4 (5 V), only with a level shifter.** Put a 74AHCT125
+  or SN74AHCT1G125, powered from 5 V, between pin 19 and DIN. Without it, the 3.3 V data
+  is below the LED's threshold and the first pixel just shows garbage white.
+
+Leave pin 17 (also 3.3 V) unconnected. If you have a strip, cut it down to a single pixel.
+Riparr drives only the first one, and on 3.3 V the others should not draw from the
+board's 3.3 V rail.
 
 **Orientation.** The header uses the Raspberry Pi B+ layout. Hold the board with CON6
 along the top edge and the USB and Ethernet ports on the right:
@@ -313,10 +323,67 @@ beside it on the edge row.
 - **A 0.1 µF capacitor across VCC and GND, right at the LED.** Many WS2812 breakout boards
   already have one.
 
-**The data signal is 3.3V, and the LED runs on 5V.** A WS2812B powered from 5V is only
-guaranteed to read about 3.5V and above as "high". It often works anyway. If the LED
-stays dark or shows the wrong colours, put a level shifter between pin 19 and DIN. A
-74AHCT125 or a single-channel equivalent works.
+**Why 5 V needs a level shifter.** Measured on a Banana Pro: with a 5.3 V supply the
+WS2812B needs about 3.7 V to read a logic 1, and the board's MOSI pin gives about 3.2 V,
+so the LED read nothing. Powering the pixel from the 3.3 V rail made the data readable.
+
+### Wiring a 74AHCT125 level shifter (full brightness on 5 V)
+
+The 74AHCT125 is four separate buffers in one 14-pin chip. Powered from 5 V, its inputs
+read anything above 2.0 V as a 1, and its outputs swing a full 5 V. One buffer turns the
+board's 3.3 V data into a signal the LED reads reliably at 5 V.
+
+**Get the right chip.** It must be **AHCT** or **HCT** (74AHCT125 or 74HCT125). A plain
+74HC125 or 74AHC125 needs about 3.5 V on its input, which is the same problem you started
+with.
+
+**Unplug the box first.** Then move the LED's VCC wire off pin 1, because the LED goes back
+on 5 V.
+
+Pin 1 of the chip is marked by a notch or dot at one end. Pins count down that side 1–7,
+then back up the other side 8–14.
+
+| 74AHCT125 pin | Name | Connect to |
+|---|---|---|
+| **14** | VCC | CON6 **pin 2** (5 V) |
+| **7** | GND | CON6 **pin 6** (ground) |
+| **1** | 1OE | **Ground.** It enables buffer 1, and it is active low |
+| **2** | 1A (input) | CON6 **pin 19** (MOSI) |
+| **3** | 1Y (output) | A **330–470 Ω resistor**, then the LED's **DIN** |
+| 4, 10, 13 | 2OE, 3OE, 4OE | **5 V.** This switches the three unused buffers off |
+| 5, 9, 12 | 2A, 3A, 4A | **Ground.** Unused inputs must not float |
+| 6, 8, 11 | 2Y, 3Y, 4Y | Nothing |
+
+The LED itself:
+
+| LED | Connect to |
+|---|---|
+| **VCC** | CON6 **pin 4** (5 V) |
+| **GND** | CON6 **pin 20** (or any ground) |
+| **DIN** | Through the resistor, from chip pin 3 |
+
+Also:
+
+- **Put a 0.1 µF capacitor across chip pins 14 and 7**, as close to the chip as you can.
+- **Keep the 0.1 µF capacitor at the LED**, across its VCC and GND.
+- **Every ground must be common:** the board's, the chip's and the LED's. A level shifter
+  with its own separate ground does nothing.
+
+**Single-buffer version.** An SN74AHCT1G125 (5-pin SOT-23) is the same thing in one gate:
+
+| Pin | Connect to |
+|---|---|
+| 5 (VCC) | 5 V |
+| 3 (GND) | Ground |
+| 1 (OE) | Ground |
+| 2 (A) | Pin 19 |
+| 4 (Y) | The resistor, then DIN |
+
+There are no unused inputs to tie off.
+
+**Check it before closing the case.** Power on and press **Test the LED**. Red, green,
+blue and white should now be full brightness, with a proper blue. If the LED shows garbage
+white, the chip is probably an HC/AHC part, or OE (pin 1) isn't grounded.
 
 Then press **Test the LED** in the **Status LED** section under **System**. That button
 sends `POST /api/system/led/test`.
@@ -327,6 +394,41 @@ To find the right bus on another board, `ls /sys/class/spi_master/` lists the
 controllers that are enabled. `/boot/dtb/overlay/README.*-overlays` names the header pins
 for each bus. Set `param_spidev_spi_bus` to the bus your LED is wired to, and point
 `RIPARR_LED_SPI` at `/dev/spidev<bus>.0`.
+
+## Adding a power button
+
+The Banana Pro already has one: **SW1**, wired to the power chip (AXP209) rather than to
+the processor. That matters, because only the power chip can turn a box back *on* — a
+button on a CON6 GPIO pin could shut it down but never wake it. So a button on your
+enclosure goes **in parallel with SW1**, and then behaves exactly like it.
+
+### Wiring
+
+Use any momentary, normally-open push button and two thin wires.
+
+1. **Unplug the box, and disconnect the battery if one is fitted.**
+2. Set a multimeter to continuity, with one probe on a known ground (the USB socket's
+   shield, or CON6 pin 6). Touch each of SW1's pads in turn. The pads that beep are
+   **ground**. The ones that only beep while you hold SW1 down are **PWRON**.
+3. Solder one wire to a ground pad and one to a PWRON pad, and run both to your button.
+   Polarity doesn't matter.
+4. Check before you close the case: with the box unplugged, pressing your button should
+   make PWRON beep against ground, just like pressing SW1.
+
+### What a press does
+
+| You do | The box does |
+|---|---|
+| **Press once**, idle | Shuts down cleanly. |
+| **Press once**, busy | Finishes everything it has started, including a disc it is still reading, all the way into your library and verified, then shuts down. Nothing new starts. Queued discs wait for next time. |
+| **Press twice** quickly, busy | Finishes the step it's on, then shuts down. A rip finishes ripping, and its upload happens after you turn it back on. An upload finishes and verifies. A TV season stops after the current episode. |
+| **Hold 1 s** while off | Turns on. |
+| **Hold 6 s** | Cuts power immediately, without shutting down cleanly. Only for when nothing else works. |
+
+While it waits, the status LED (if you've wired one) **blinks white** and every page shows a banner saying what
+it's waiting on, with a **Cancel** button.
+
+If Riparr itself isn't responding, a press still turns the box off within ten seconds.
 
 ## Starting over
 
