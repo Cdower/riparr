@@ -50,6 +50,36 @@ next disc means *stream mode*, not a refusal. `/api/status` returns
 contradict the design and push people toward larger cards for a benefit that doesn't
 exist.
 
+## Tests
+
+Each `*.test.py` beside this file is a standalone script:
+
+```sh
+uv run python music-pipeline.test.py
+```
+
+`music-pipeline.test.py` drives the real audio tools rather than mocks, and fails at the
+start if any of them is missing. On a Mac they come from Homebrew:
+
+```sh
+brew install libcdio libcdio-paranoia flac lame opus-tools vorbis-tools ffmpeg
+```
+
+| Tool | Formula |
+|---|---|
+| `cd-info` | `libcdio` |
+| `cd-paranoia` | `libcdio-paranoia` |
+| `flac`, `metaflac` | `flac` |
+| `lame` | `lame` |
+| `opusenc` | `opus-tools` (not `libopusenc`, which is only the library) |
+| `oggenc` | `vorbis-tools` |
+| `ffmpeg`, `ffprobe` | `ffmpeg` |
+| `bsdtar` | ships with macOS |
+
+The data-CD case builds its ISO with `xorriso` when there is one and falls back to
+macOS's own `hdiutil`, so `xorriso` is optional here. CI installs the Debian equivalents;
+see the music step in `.github/workflows/ci.yml`.
+
 ## API
 
 Self-documenting at `/api/docs`. The UI is only the first client of it — that is what
