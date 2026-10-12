@@ -95,19 +95,51 @@ for sid in wanted:
 PYEOF
 ) || { log "could not read the shares"; exit 0; }
 
+# What is mounted at a path, as mount.cifs names it: //host/share. Lower-cased, because
+# SMB hosts and share names are case-insensitive and the kernel reports what it was given.
+source_at() { findmnt -n -o SOURCE "$1" 2>/dev/null | head -n1 | tr '[:upper:]' '[:lower:]'; }
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# First, what should no longer be mounted. The default keeps $MOUNT and every other
+# wanted share keeps $MOUNT-<id>, so a mount at any other $MOUNT-* is a share that was
+# deleted, or that nothing points at any more, or that became the default and moved.
+# Left behind it holds a socket open to a NAS nothing writes to -- and the same NAS
+# mounted twice is how "already mounted" was first noticed to be the wrong question.
+WANTED=$'\n'
+while IFS=$'\t' read -r SID ISDEF _rest; do
+  [ -n "${SID:-}" ] || continue
+  if [ "$ISDEF" = "1" ]; then WANTED+="$MOUNT"$'\n'; else WANTED+="$MOUNT-$SID"$'\n'; fi
+done <<< "$ROWS"
+for m in "$MOUNT" "$MOUNT"-*; do
+  [ -d "$m" ] && mountpoint -q "$m" || continue
+  case "$WANTED" in *$'\n'"$m"$'\n'*) continue;; esac
+  log "unmounting $m: nothing is configured to write there any more"
+  umount -l "$m" 2>/dev/null || log "could not unmount $m"
+done
+
 [ -n "$ROWS" ] || { log "no share configured; skipping"; exit 0; }
 
 while IFS=$'\t' read -r SID ISDEF HOST SHARE USER DOMAIN; do
   [ -n "${SID:-}" ] || continue
   if [ "$ISDEF" = "1" ]; then TARGET="$MOUNT"; else TARGET="$MOUNT-$SID"; fi
+  WANT="//$HOST/$SHARE"
 
+  # Idempotent means "the right share is there", not "something is there". The default
+  # can move to another NAS, and the old one used to stay at $MOUNT because this only
+  # asked whether the path was a mountpoint -- so after a change of default every
+  # direct-mode rip landed on the wrong machine until the next reboot.
   if mountpoint -q "$TARGET"; then
-    log "already mounted at $TARGET"; continue
+    HAVE=$(source_at "$TARGET")
+    if [ "$HAVE" = "$(lower "$WANT")" ]; then
+      log "already mounted at $TARGET"; continue
+    fi
+    log "$TARGET holds ${HAVE:-another share}; replacing it with $WANT"
+    umount -l "$TARGET" 2>/dev/null || { log "could not unmount $TARGET"; continue; }
   fi
 
   # The share row holds the password, so it is read here and written only to a 0600
   # file. Never on a command line: /proc/*/cmdline is world-readable.
-  CRED=$(mktemp /run/riparr-cred.XXXXXX) || continue
+  CRED=$(mktemp "${RIPARR_RUN_DIR:-/run}/riparr-cred.XXXXXX") || continue
   chmod 600 "$CRED"
   "$PY" - "$DB" "$SID" >> "$CRED" <<'PYEOF'
 import sqlite3, sys

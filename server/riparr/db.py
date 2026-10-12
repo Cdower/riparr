@@ -359,6 +359,61 @@ DEFAULTS = {
 }
 
 
+# Settings whose value is one of a fixed set. The rest are checked by the shape of
+# their default: a number stays a number, a list a list.
+CHOICES = {
+    "transfer_mode": ("auto", "burst", "stream", "direct"),
+    "verify_mode": ("quick", "deep", "off"),
+    "log_files": ("card", "memory", "off"),
+    "title_3d": ("2d", "3d"),
+    "on_season_disc": ("unsure", "ask", "auto"),
+    "duplicate_signal": ("flash", "tray", "both", "off"),
+}
+
+
+def check_setting(key, value):
+    """Why `value` cannot be stored under `key`, or None if it can.
+
+    Settings arrive from three doors -- the Settings page, a config import and a
+    backup restore -- and none of them used to look at the value. A string where a
+    number belongs went straight into the table, every reader cast it blindly, and
+    the dashboard's status poll was a 500 until somebody found the row by hand. The
+    check is by the shape of the shipped default, which is the one description of
+    every setting this module already has.
+    """
+    if key not in DEFAULTS:
+        return "There is no setting called %r." % key
+    if key in CHOICES:
+        if value in CHOICES[key]:
+            return None
+        return "%s must be one of %s, not %r." % (key, ", ".join(CHOICES[key]), value)
+    if key == "music_format":
+        from . import music
+        return None if value in music.FORMATS else "%s is not a music format." % (value,)
+    default = DEFAULTS[key]
+    if default is None:
+        # The share ids are a row id or "the default". The MakeMKV facts the box fills
+        # in itself (makemkv_key_renewal, makemkv_shop_open) take whatever it records.
+        if key.endswith("_share_id") and value is not None and not _is_int(value):
+            return "%s must be a share id or null, not %r." % (key, value)
+        return None
+    if isinstance(default, bool):
+        want, ok = "true or false", isinstance(value, bool)
+    elif isinstance(default, int):
+        want, ok = "a number", _is_int(value)
+    elif isinstance(default, str):
+        want, ok = "text", isinstance(value, str)
+    elif isinstance(default, list):
+        want, ok = "a list", isinstance(value, list)
+    else:
+        want, ok = "an object", isinstance(value, dict)
+    return None if ok else "%s must be %s, not %r." % (key, want, value)
+
+
+def _is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 # Settings that stop meaning anything in direct mode, and what they become instead.
 # Deep verification proves a *copy* matches its original; a direct rip has no copy, so
 # the only thing deep could hash is the file against itself. rip._verify already

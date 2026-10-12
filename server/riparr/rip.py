@@ -291,9 +291,23 @@ def enqueue(force=False, expect=None):
     # be the one stage that never got one.
     db.stage_enter(job_id, "identify")
 
+    def _cancelled():
+        """Has the user cancelled this row while enqueue was busy?
+
+        The scan below holds this thread for minutes, and cancel() has no event to
+        set for it -- all it can do is mark the row. This used to write 'queued'
+        straight over that mark and wake the worker, so the disc the user had just
+        cancelled was ripped. The row is the only channel, so it is read back
+        before anything is built on it.
+        """
+        row = db.get_job(job_id)
+        return not row or row["state"] in db.FINAL_STATES
+
     def _abandon(reason):
         """Take the row back down when the disc turns out not to be rippable."""
         db.stage_end(job_id)
+        if _cancelled():
+            return
         db.update_job(job_id, state="cancelled", phase=None,
                       finished_at=int(time.time()), error=reason)
 
@@ -320,6 +334,9 @@ def enqueue(force=False, expect=None):
         P.eject()
         return None, str(e)
     db.update_job(job_id, fingerprint=fp)
+    if _cancelled():
+        log.info("Job %d: cancelled while the disc was being read", job_id)
+        return None, "Cancelled while the disc was being read."
 
     if expect and fp != expect:
         msg = "The disc in the tray isn't the one you asked to re-rip."
@@ -347,6 +364,8 @@ def enqueue(force=False, expect=None):
     # `_identify` reopens it for its own pass, which is a cache hit and costs seconds;
     # the two runs sum to the truth.
     db.stage_end(job_id)
+    if _cancelled():
+        return None, "Cancelled while the disc was being read."
     db.update_job(job_id, state="queued", phase="Waiting to start")
     _wake.set()
     return job_id, None

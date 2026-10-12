@@ -3145,21 +3145,21 @@ function healthMessages(st) {
   const m = st.makemkv;
   if (!m.installed)
     out.push({ level: "bad", message: "MakeMKV is not installed, so no disc can be read.",
-               href: "#/settings/makemkv", action: "Install MakeMKV" });
+               href: "#/settings/general", action: "Install MakeMKV" });
   else if (m.days_left != null && st.clock && !st.clock.plausible)
     out.push({ level: "warn", message: "Riparr can't tell whether the MakeMKV key is "
       + "still valid, because the clock is wrong.",
-      href: "#/settings/makemkv", action: "Update the key" });
+      href: "#/settings/general", action: "Update the key" });
   else if (m.days_left != null && m.days_left <= 0)
     out.push({ level: "bad", message: "The MakeMKV key has expired. Rips will fail until it is replaced.",
-               href: "#/settings/makemkv", action: "Update the key" });
+               href: "#/settings/general", action: "Update the key" });
   else if (m.key_stale)
     out.push({ level: "warn", message: "A newer MakeMKV key has been published — the one "
       + "on this box is older and may already have lapsed.",
-      href: "#/settings/makemkv", action: "Update the key" });
+      href: "#/settings/general", action: "Update the key" });
   else if (m.days_left != null && m.days_left <= (state.settings?.warn_key_days ?? 7))
     out.push({ level: "warn", message: `The MakeMKV key expires in ${m.days_left} day(s).`,
-               href: "#/settings/makemkv", action: "Update the key" });
+               href: "#/settings/general", action: "Update the key" });
 
   if (!st.drives || !st.drives.length)
     out.push({ level: "bad", message: `No optical drive detected — ${
@@ -3168,7 +3168,7 @@ function healthMessages(st) {
 
   if (!st.share)
     out.push({ level: "warn", message: "No network share configured, so finished rips have nowhere to go.",
-               href: "#/settings/share", action: "Add a share" });
+               href: "#/settings/library", action: "Add a share" });
 
   if (!st.wifi.connected)
     out.push({ level: "bad", message: "Wi-Fi is not connected.",
@@ -3528,11 +3528,11 @@ function paintMakeMKVStrip() {
     return;
   }
   if (s.phase === "error") {
-    box.innerHTML = `<a class="mk-strip bad" href="#/settings/makemkv">MakeMKV build failed</a>`;
+    box.innerHTML = `<a class="mk-strip bad" href="#/settings/general">MakeMKV build failed</a>`;
     return;
   }
   const pct = Math.max(0, Math.min(100, Math.round((s.progress || 0) * 100)));
-  box.innerHTML = `<a class="mk-strip busy" href="#/settings/makemkv" title="${esc(s.message || "")}">
+  box.innerHTML = `<a class="mk-strip busy" href="#/settings/general" title="${esc(s.message || "")}">
     <div class="mk-line"><span>Building MakeMKV</span><b>${pct}%</b></div>
     <span class="mk-bar"><i style="width:${pct}%"></i></span></a>`;
 }
@@ -3908,12 +3908,27 @@ function wireContent(section, sub) {
         const r = await fetch("/api/system/backups/upload", { method: "POST", body: fd });
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || "Restore failed");
-        toast(`Restored ${d.settings} setting(s). ${d.note}`, "ok");
+        toast(restoreSummary(d), "ok");
       } catch (e) { toast(e.message, "bad"); }
       bkFile.value = "";
       route();
     };
   }
+
+  // What a restore put back, in the order somebody checks it: the shares (without
+  // which nothing rips), then the discs it will now refuse, then the settings.
+  const restoreSummary = (r) => {
+    const parts = [];
+    const shares = r.shares_restored || [];
+    if (shares.length) parts.push(`${shares.length} share${shares.length === 1 ? "" : "s"}`);
+    if (r.discs) parts.push(`${r.discs} disc${r.discs === 1 ? "" : "s"}`);
+    parts.push(`${r.settings} setting${r.settings === 1 ? "" : "s"}`);
+    let msg = `Restored ${parts.join(", ")}.`;
+    const skipped = Object.keys(r.rejected || {}).length;
+    if (skipped) msg += ` ${skipped} setting${skipped === 1 ? " was" : "s were"} skipped.`;
+    if (r.note) msg += ` ${r.note}`;
+    return msg;
+  };
 
   $$("[data-restore]").forEach(b => b.onclick = async () => {
     const name = b.dataset.restore;
@@ -3921,7 +3936,7 @@ function wireContent(section, sub) {
                  + `Share passwords are not in a backup and will have to be re-entered.`)) return;
     try {
       const r = await api.post(`/api/system/backups/${encodeURIComponent(name)}/restore`);
-      toast(`Restored ${r.settings} setting(s). ${r.note}`, "ok");
+      toast(restoreSummary(r), "ok");
     } catch (e) { toast(e.message, "bad"); }
     route();
   });

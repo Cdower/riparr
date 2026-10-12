@@ -87,6 +87,23 @@ except Exception as e:
     got = getattr(e, "status_code", None)
 check("a share that doesn't exist is a 404", got, 404)
 
+print("the mount follows the default, both ways")
+asked = []
+real_remount = P.request_remount
+P.request_remount = lambda: asked.append(True) or True
+try:
+    fifth = db.add_share("Attic", "attic.example", "Media", None, None)
+    MAIN.shares_set_default(fifth, user=None)
+    check("making a share the default asks for a remount", len(asked), 1)
+    MAIN.shares_delete(fifth, user=None)
+    check("the oldest share left is promoted", defaults(), [second])
+    check("and removing the default asks for one too", len(asked), 2)
+    MAIN.shares_delete(db.add_share("Spare", "spare.example", "Media", None, None),
+                       user=None)
+    check("removing any share asks, so its mount is swept", len(asked), 3)
+finally:
+    P.request_remount = real_remount
+
 print("")
 shutil.rmtree(_tmp, ignore_errors=True)
 if failures:

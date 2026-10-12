@@ -172,16 +172,22 @@ def _put(tmpdir, name, content):
 
 def wpa_conf(ssid, psk_hex, country="US"):
     """wpa_supplicant config. An unquoted psk is a 64-hex PSK, so no passphrase lands
-    on the card -- same property the Raspberry Pi path had."""
+    on the card -- same property the Raspberry Pi path had.
+
+    No key means an open network, which the Preparer offers and cloud-init already
+    handles (rpi_cloudinit.network_config). wpa_supplicant wants that said outright:
+    `key_mgmt=NONE`, and no psk line at all.
+    """
+    auth = ('\tpsk=%s\n' % psk_hex) if psk_hex else '\tkey_mgmt=NONE\n'
     return ('ctrl_interface=DIR=/run/wpa_supplicant GROUP=netdev\n'
             'update_config=1\n'
             'country=%s\n'
             '\n'
             'network={\n'
             '\tssid="%s"\n'
-            '\tpsk=%s\n'
+            '%s'
             '\tscan_ssid=1\n'
-            '}\n' % (country, ssid.replace('"', '\\"'), psk_hex))
+            '}\n' % (country, ssid.replace('"', '\\"'), auth))
 
 
 def network_unit():
@@ -293,12 +299,13 @@ def cfg_from_custom_toml(toml_path, port=9797):
     cfg = {
         "hostname": val("system", "hostname", "riparr"),
         "ssid": val("wlan", "ssid"),
-        "psk": val("wlan", "password"),
+        # Absent for an open network -- build_toml writes no password line at all.
+        "psk": val("wlan", "password") or "",
         "country": val("wlan", "country", "US"),
         "authorized_key": m.group(1) if m else "",
         "port": port,
     }
-    missing = [k for k in ("ssid", "psk", "authorized_key") if not cfg[k]]
+    missing = [k for k in ("ssid", "authorized_key") if not cfg[k]]
     if missing:
         raise DebugfsError("custom.toml is missing %s, so the card cannot be "
                            "provisioned headlessly." % ", ".join(missing))
@@ -474,9 +481,13 @@ def verify(target, cfg, debugfs=None):
                    cat("/etc/hostname").strip()))
     w = cat("/etc/wpa_supplicant/wpa_supplicant-wlan0.conf")
     checks.append(("wifi ssid", ('ssid="%s"' % cfg["ssid"]) in w, cfg["ssid"]))
-    checks.append(("wifi psk (64-hex, no passphrase)",
-                   ("psk=" + cfg["psk"]) in w and cfg["psk"].isalnum() and len(cfg["psk"]) == 64,
-                   "%d hex chars" % len(cfg["psk"])))
+    if cfg.get("psk"):
+        checks.append(("wifi psk (64-hex, no passphrase)",
+                       ("psk=" + cfg["psk"]) in w and cfg["psk"].isalnum()
+                       and len(cfg["psk"]) == 64,
+                       "%d hex chars" % len(cfg["psk"])))
+    else:
+        checks.append(("wifi open network", "key_mgmt=NONE" in w and "psk=" not in w, ""))
     checks.append(("wpa conf mode 0600", "Mode:  0600" in
                    stat("/etc/wpa_supplicant/wpa_supplicant-wlan0.conf"), ""))
     n = cat("/etc/systemd/network/10-wlan0.network")

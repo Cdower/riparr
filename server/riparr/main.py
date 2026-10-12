@@ -785,6 +785,13 @@ async def put_settings(request: Request, user=Depends(require_user)):
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Expected an object")
     body.pop("session_secret", None)
+    # Checked before anything is written, so a bad field leaves the whole save unsaved
+    # rather than half of it. See db.check_setting for what one bad value used to do.
+    bad = [why for k, v in body.items()
+           if not (k in SECRET_SETTINGS and v == SECRET_MASK)
+           for why in [db.check_setting(k, v)] if why]
+    if bad:
+        raise HTTPException(status_code=400, detail=" ".join(bad))
     for k, v in body.items():
         if k in SECRET_SETTINGS and v == SECRET_MASK:
             continue                      # unchanged; do not overwrite with the mask
@@ -1059,6 +1066,11 @@ def shares_delete(share_id: int, user=Depends(require_user)):
     for kind, (share_key, _, _) in db.KINDS.items():
         if db.get(share_key) == share_id:
             db.set(share_key, None)
+    # The mounts follow the table. Deleting the default promotes the next share
+    # (db.delete_share), which now owns /srv/library; deleting any other leaves a
+    # mount at /srv/library-<id> that nothing writes to. Without this the deleted
+    # default stayed mounted as the library and direct-mode rips kept landing on it.
+    P.request_remount()
     return {"ok": True}
 
 
@@ -1771,39 +1783,27 @@ async def config_import(request: Request, user=Depends(require_user)):
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Expected an object")
 
+    # The same three steps a backup restore takes (system._apply), so the two doors
+    # cannot drift apart again.
     settings = body.get("settings") or {}
-    for k, v in settings.items():
-        if k != "session_secret":
-            db.set(k, v)
+    n, rejected = SY.restore_settings(settings)
+    restored, need_password = SY.restore_shares(body.get("shares") or [])
+    discs = SY.restore_discs(body.get("discs") or [])
 
-    # Registering the key is not a db.set -- see put_settings.
-    if "makemkv_key" in settings:
-        MK.apply_key(settings["makemkv_key"])
-        MK.record_expiry_for(settings["makemkv_key"])
-
-    existing = {(s["host"], s["path"]) for s in db.list_shares()}
-    restored, need_password = [], []
-    for sh in (body.get("shares") or []):
-        host, path = sh.get("host"), sh.get("path")
-        if not host or not path or (host, path) in existing:
-            continue
-        db.add_share(sh.get("name") or "%s/%s" % (host, path), host, path,
-                     sh.get("username") or "", "",
-                     make_default=bool(sh.get("is_default")))
-        existing.add((host, path))
-        restored.append("%s/%s" % (host, path))
-        need_password.append("%s/%s" % (host, path))
-
-    parts = ["%d setting%s restored" % (len(settings), "" if len(settings) == 1 else "s")]
+    parts = ["%d setting%s restored" % (n, "" if n == 1 else "s")]
+    if rejected:
+        parts.append("%d skipped (%s)" % (len(rejected), " ".join(rejected.values())))
     if restored:
         parts.append("%d share%s restored" % (len(restored),
                                               "" if len(restored) == 1 else "s"))
     if need_password:
         parts.append("re-enter the password for %s before it can be used"
                      % ", ".join(need_password))
-    return {"ok": True, "settings_imported": len(settings),
+    if discs:
+        parts.append("%d disc%s remembered" % (discs, "" if discs == 1 else "s"))
+    return {"ok": True, "settings_imported": n, "rejected": rejected,
             "shares_restored": restored, "shares_need_password": need_password,
-            "message": ". ".join(parts) + "."}
+            "discs": discs, "message": ". ".join(parts) + "."}
 
 
 # ──────────────────── system: tasks, events, logs, backups ────────────────────

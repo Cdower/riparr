@@ -99,6 +99,45 @@ fake_env(write_error=OSError("device gone"))
 check("write error returns False", led._write(colour), False)
 check("fd still closed after write error", calls["closed"], [42])
 
+print("idle cost")
+# The thread runs whether or not there is an LED, so that plugging one in later works.
+# What it must not do is pay for the state -- a subprocess and three database reads --
+# twenty times a second on a box with nothing attached and nothing to do.
+import threading  # noqa: E402
+
+asked = {"n": 0}
+
+
+def counting_state():
+    asked["n"] += 1
+    return "ready"
+
+
+led.current_state = counting_state
+led.TICK, led.STATE_EVERY = 0.01, 0.2
+
+
+def run_loop(seconds):
+    asked["n"] = 0
+    fake_env()
+    led._stop.clear()
+    t = threading.Thread(target=led._loop, daemon=True)
+    t.start()
+    t.join(seconds)
+    led._stop.set()
+    t.join(1)
+    return asked["n"], len(calls["writes"])
+
+
+led.available = lambda: False
+n, writes = run_loop(0.5)
+check("no LED: the state is never computed", n, 0)
+check("no LED: nothing is written", writes, 0)
+led.available = lambda: True
+n, writes = run_loop(0.5)
+check("LED: the state is computed about every STATE_EVERY, not every tick", n <= 4, True)
+check("LED: the animation still runs every tick", writes >= 10, True)
+
 print()
 if failures:
     print("%d FAILED" % len(failures))

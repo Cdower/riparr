@@ -20,6 +20,9 @@ ssh_config
 
 # ── Python ────────────────────────────────────────────────────────────
 .venv/
+# The "Python names exist" step from ci.yml, run by hand
+flakes.txt
+undefined.txt
 __pycache__/
 *.pyc
 

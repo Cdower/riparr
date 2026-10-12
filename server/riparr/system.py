@@ -382,16 +382,97 @@ def restore_backup(name):
 
 
 def _apply(payload, name):
-    n = 0
-    for k, v in (payload.get("settings") or {}).items():
-        if k in ("session_secret",):        # never restore the cookie key
+    """Put back everything the backup carried: settings, shares and the disc history.
+
+    It used to restore the settings alone and throw the other two away -- while
+    answering with a share count and a note about passwords, so the toast read as if
+    the shares were back. On a fresh card that meant "No library share", and a disc
+    table so empty that every film ever ripped was ripped again instead of refused.
+    Settings > Export/Import had the share-restoring loop all along; both doors now
+    go through the same three functions.
+    """
+    n, rejected = restore_settings(payload.get("settings") or {})
+    restored, need_password = restore_shares(payload.get("shares") or [])
+    discs = restore_discs(payload.get("discs") or [])
+    component("Backup").warning(
+        "Restored %d setting(s), %d share(s) and %d disc(s) from %s",
+        n, len(restored), discs, name)
+    out = {"ok": True, "settings": n, "rejected": rejected,
+           "shares_restored": restored, "shares_need_password": need_password,
+           "discs": discs}
+    if need_password:
+        out["note"] = ("Share passwords are not stored in a backup: re-enter the "
+                       "password for %s before it can be used." % ", ".join(need_password))
+    return out
+
+
+def restore_settings(settings):
+    """Store every setting that is a setting. Returns (stored, {key: why rejected}).
+
+    The cookie key is never restored -- a backup is a file that gets mailed about.
+    Anything that fails db.check_setting is skipped rather than stored, because a
+    hand-edited file is exactly the input this door sees, and one bad value used to
+    take the dashboard down on its next poll.
+    """
+    n, rejected = 0, {}
+    for k, v in settings.items():
+        if k == "session_secret":
+            continue
+        why = db.check_setting(k, v)
+        if why:
+            rejected[k] = why
             continue
         db.set(k, v)
         n += 1
-    component("Backup").warning("Restored %d setting(s) from %s", n, name)
-    return {"ok": True, "settings": n,
-            "shares": len(payload.get("shares") or []),
-            "note": "Share passwords are not stored in a backup and must be re-entered."}
+    # Registering the key is not a db.set -- see main.put_settings.
+    if "makemkv_key" in settings and "makemkv_key" not in rejected:
+        from . import makemkv as MK
+        MK.apply_key(settings["makemkv_key"])
+        MK.record_expiry_for(settings["makemkv_key"])
+    db.reconcile(settings)
+    return n, rejected
+
+
+def restore_shares(shares):
+    """Add every share not already present. Returns (restored, needing a password).
+
+    Passwords are deliberately not in a backup, so a restored share arrives without
+    one and is reported as needing it rather than silently created broken. A share
+    already on the box (same host and path) is left exactly as it is, password and
+    all.
+    """
+    existing = {(s["host"], s["path"]) for s in db.list_shares()}
+    restored, need_password = [], []
+    for sh in shares:
+        host, path = sh.get("host"), sh.get("path")
+        if not host or not path or (host, path) in existing:
+            continue
+        db.add_share(sh.get("name") or "%s/%s" % (host, path), host, path,
+                     sh.get("username") or "", "",
+                     make_default=bool(sh.get("is_default")))
+        existing.add((host, path))
+        restored.append("%s/%s" % (host, path))
+        need_password.append("%s/%s" % (host, path))
+    return restored, need_password
+
+
+def restore_discs(discs):
+    """Remember every disc the backup knew that this box does not. Returns how many.
+
+    A disc the box already has is left alone: its record may be newer than the
+    backup's. Only columns this schema has are written, so a backup from a later
+    release restores into an earlier one without a crash.
+    """
+    columns = {r["name"] for r in db.conn().execute("PRAGMA table_info(discs)")}
+    n = 0
+    for d in discs:
+        fp = d.get("fingerprint")
+        if not fp or db.get_disc(fp):
+            continue
+        fields = {k: v for k, v in d.items() if k != "fingerprint" and k in columns}
+        db.record_disc(fp, **fields)
+        n += 1
+    return n
 
 
 # ─────────────────────────────── scheduled tasks ───────────────────────────────

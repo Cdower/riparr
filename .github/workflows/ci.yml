@@ -67,16 +67,16 @@ jobs:
       - name: Python names exist
         run: |
           pip install -q pyflakes
-          pyflakes server/riparr tools/preparer tools/flasher > flakes.txt || true
-          grep "undefined name" flakes.txt \
-            | grep -v "unable to detect undefined names" > undefined.txt || true
-          if [ -s undefined.txt ]; then
-            sed 's/^/::error::/' undefined.txt
+          pyflakes server/riparr tools/preparer tools/flasher > "$RUNNER_TEMP/flakes.txt" || true
+          grep "undefined name" "$RUNNER_TEMP/flakes.txt" \
+            | grep -v "unable to detect undefined names" > "$RUNNER_TEMP/undefined.txt" || true
+          if [ -s "$RUNNER_TEMP/undefined.txt" ]; then
+            sed 's/^/::error::/' "$RUNNER_TEMP/undefined.txt"
             exit 1
           fi
           echo "ok  every name resolves"
           echo "--- pyflakes also noticed (not fatal) ---"
-          cat flakes.txt
+          cat "$RUNNER_TEMP/flakes.txt"
 
       # `hostos` is a facade over four backends, and a function implemented in one of them
       # but not re-exported here does not exist as far as any caller is concerned. That is
@@ -207,6 +207,21 @@ jobs:
         run: |
           python server/backup-pipeline.test.py
 
+      # A restore put the settings back and threw the shares and the disc history away,
+      # while saying the shares only needed a password. And none of the three doors a
+      # setting arrives through looked at the value, so text where a number belonged
+      # was a 500 on every dashboard poll.
+      - name: A backup restores everything it carried
+        run: |
+          python server/backup-restore.test.py
+
+      # Two cancels that were heard and then ignored: one during the identify scan,
+      # overwritten by "queued" when the scan finished; one during a real upload,
+      # noticed only once the whole file had landed on the share.
+      - name: A cancel sticks wherever it lands
+        run: |
+          python server/cancel-mid-flight.test.py
+
       # Music CDs, through the real tools: cd-paranoia reading a synthesized disc image,
       # cd-info reading its CD-Text, flac and lame encoding, bsdtar copying a data CD.
       # Nothing here had a CD drive when it was written, so the tools themselves are the
@@ -243,6 +258,14 @@ jobs:
             echo "::error::a root script opens the database writable"; exit 1
           fi
           echo "ok  no root helper can create riparr.db"
+
+      # "Already mounted" used to be the answer whenever anything was at /srv/library,
+      # so moving or deleting the default share left the old NAS mounted there and
+      # direct-mode rips kept landing on it. Every mount call is stubbed and recorded;
+      # the script and the database it reads are real.
+      - name: The library mount follows the default share
+        run: |
+          bash tools/mount-library.test.sh
 
       - name: Shell parses
         run: |

@@ -276,18 +276,37 @@ _last = {"state": None}
 # Fast enough that a breathe reads as smooth, slow enough to be free on a board that
 # is doing something else with its one useful core.
 TICK = 0.05
+# How often the *state* is recomputed. It costs an `iw` subprocess and three database
+# reads, which at TICK was twenty subprocess spawns a second on a board doing nothing,
+# competing with makemkvcon for the one useful core. The animation needs TICK; the
+# answer does not change that fast, and a second's lag on a colour is invisible.
+STATE_EVERY = 1.0
+# With no LED there is nothing to animate, so the thread only looks for one.
+IDLE_TICK = 1.0
 
 
 def _loop():
     started = time.time()
-    while not _stop.wait(TICK):
+    name, asked = None, 0.0
+    while True:
+        if not available():
+            # Keep looking, so an LED plugged in later works -- but compute nothing
+            # for a light that is not there.
+            if _stop.wait(IDLE_TICK):
+                return
+            name = None
+            continue
+        if _stop.wait(TICK):
+            return
         try:
-            name = current_state()
-            if name != _last["state"]:
-                log.debug("LED -> %s", name)
-                _last["state"] = name
+            now = time.time()
+            if name is None or now - asked >= STATE_EVERY:
+                name, asked = current_state(), now
+                if name != _last["state"]:
+                    log.debug("LED -> %s", name)
+                    _last["state"] = name
             colour, pattern = STATES.get(name, (OFF, "solid"))
-            _write(_scaled(colour, _level(pattern, time.time() - started)))
+            _write(_scaled(colour, _level(pattern, now - started)))
         except Exception:
             # A thread that dies takes the LED with it for the rest of the uptime,
             # and nothing else notices. Carrying on with a wrong colour beats that.

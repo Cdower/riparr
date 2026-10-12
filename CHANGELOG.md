@@ -10,6 +10,43 @@ bother updating.
 
 ## Unreleased
 
+**Changing or removing the default share now actually moves the library mount.** The
+mount script treated "something is mounted at /srv/library" as "the right thing is
+mounted there", so after the default moved to another NAS every direct-mode rip kept
+landing on the old one until the next reboot. It now checks *which* share is there,
+replaces a wrong one, and unmounts shares nothing points at any more. Deleting a share
+asks for the same remount as changing the default.
+
+**Restoring a backup puts the shares and the disc history back.** It restored the
+settings alone and threw the rest away while saying the shares only needed a password.
+On a fresh card that meant "No library share" and every disc ever ripped being ripped
+again. The toast now says exactly what came back; Settings → Import does the same.
+
+**Cancel works while a disc is being read, and during a real upload.** A cancel pressed
+during the minutes-long identify scan was overwritten when the scan finished and the
+disc was ripped anyway. A cancel during a send to the NAS was noticed only once the
+whole file had arrived; smbclient is now stopped at once and the partial file removed.
+
+**The status LED no longer costs anything on a box with nothing attached.** Its thread
+was computing the box's state twenty times a second — a Wi-Fi subprocess and three
+database reads each time — whether or not there was an LED to show it on.
+
+**A settings value of the wrong shape is refused rather than stored.** A hand-edited
+import or a stray API call could put text where a number belongs, and the dashboard was
+a 500 on every poll until somebody found the row.
+
+**The Preparer provisions an open Wi-Fi network on Orange Pi and Banana Pro cards.** The
+ext4 path demanded a password after the image was already written and reported the card
+as "written, but could not be configured".
+
+**riparr.conf on the boot partition no longer carries the Wi-Fi key or the SSH key.**
+Nothing on the board read them from there — the Pi is provisioned by cloud-init and the
+Armbian boards by the Preparer directly — and the first-boot step meant to strip them
+out again had never been installed, so they sat on a FAT partition anyone could read.
+
+**"Install MakeMKV", "Update the key" and "Add a share" links go to the right pages.**
+They pointed at settings tabs that do not exist and landed on Library.
+
 **The default share can be changed.** Each share on Settings → Library now has a *Make
 default* button. Removing the default share makes the oldest remaining one the default
 instead of leaving none — a box whose only share wasn't its default is how one NAS came to

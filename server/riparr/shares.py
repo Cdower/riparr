@@ -409,13 +409,41 @@ class Transport:
     def _remote(self, name):
         return "%s/%s" % (self.root, name.strip("/")) if self.root else name.strip("/")
 
-    def _run(self, command, timeout=120):
+    def _run(self, command, timeout=120, cancel=None):
+        """One smbclient command. With `cancel`, the process is killed the moment the
+        event is set and the result is (1, "", "Cancelled").
+
+        Polled rather than waited for when there is something to poll: a transfer is
+        hours long, and a cancel that is only noticed once smbclient has finished is
+        not a cancel -- the whole file landed on the share under a job marked
+        cancelled, and nothing removed it.
+        """
         auth, authfile = _auth_args(self.username, self.password)
+        argv = [SMBCLIENT, "//%s/%s" % (self.host, self.share)] + auth + ["-c", command]
         try:
-            p = subprocess.run(
-                [SMBCLIENT, "//%s/%s" % (self.host, self.share)] + auth + ["-c", command],
-                capture_output=True, text=True, timeout=timeout)
-            return p.returncode, (p.stdout or ""), (p.stderr or "")
+            if cancel is None:
+                p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+                return p.returncode, (p.stdout or ""), (p.stderr or "")
+            p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True)
+            deadline = time.time() + timeout
+            while True:
+                try:
+                    out, err = p.communicate(timeout=0.5)
+                    return p.returncode, (out or ""), (err or "")
+                except subprocess.TimeoutExpired:
+                    pass
+                if cancel.is_set() or time.time() > deadline:
+                    p.kill()
+                    p.wait()
+                    # Not communicate(): that waits for the pipes to close, and
+                    # anything smbclient left behind holding them would hold this
+                    # thread for as long as it lived.
+                    for f in (p.stdout, p.stderr):
+                        f.close()
+                    if cancel.is_set():
+                        return 1, "", "Cancelled"
+                    return 1, "", "The share did not respond within %ds." % timeout
         except FileNotFoundError:
             raise SmbToolMissing()
         except subprocess.TimeoutExpired:
@@ -555,8 +583,17 @@ class Transport:
                     progress(total, total)
                 return {"ok": True, "bytes": total, "target": self.describe(name)}
 
+            if cancel is not None and cancel.is_set():
+                return {"ok": False, "error": "Cancelled"}
             rc, out, err = self._run('put "%s" "%s"' % (local_path, remote),
-                                     timeout=max(600, int(total / (200 * 1024)) + 600))
+                                     timeout=max(600, int(total / (200 * 1024)) + 600),
+                                     cancel=cancel)
+            if cancel is not None and cancel.is_set():
+                # smbclient was killed mid-write, so a truncated file with the film's
+                # name is on the share. Left there it is what somebody browsing the
+                # library opens, and what _avoid_clobbering steps around next time.
+                self.delete(name)
+                return {"ok": False, "error": "Cancelled"}
             if rc != 0:
                 return {"ok": False, "error": _clean(err or out)}
             if progress:
