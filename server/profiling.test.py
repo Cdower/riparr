@@ -81,6 +81,10 @@ cpu[1] += 10_000_000
 s.tick(1010.05)                       # past the window: closes it
 s.tick(1010.06)
 check("the window closes on schedule", len(windows), 2)
+cpu[1] += 10_000_000
+s.tick(1005.00)                       # the wall clock stepped backwards
+check("a backward clock step closes the window", len(windows), 3)
+check("a backward step never sends from > until", windows[2][0] <= windows[2][1], True)
 
 # ── the real clock, where there is one ──
 clk = PR.thread_cpu_clock(threading.get_ident())

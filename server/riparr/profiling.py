@@ -213,12 +213,17 @@ class Sampler:
             return None
 
     def tick(self, now):
-        """Take one sample, then close the window if it has run its length."""
+        """Take one sample, then close the window if it has run its length.
+
+        `now` is wall-clock time, because Pyroscope wants unix seconds, and the box has
+        no RTC: NTP steps the clock at boot, sometimes backwards. A backward step closes
+        the window at once rather than holding it open for the size of the jump.
+        """
         with self._lock:
             if self._window_start is None:
                 self._window_start = now
             self._sample()
-            if now - self._window_start >= self.window:
+            if now < self._window_start or now - self._window_start >= self.window:
                 self._close(now)
 
     def flush(self, now):
@@ -268,7 +273,10 @@ class Sampler:
     def _close(self, now):
         stacks, self._stacks = self._stacks, {}
         start = now if self._window_start is None else self._window_start
-        from_ts, until_ts = int(start), int(now)
+        # After a backward clock step `now` is before the start; the window is reported
+        # as ending where it began, because Pyroscope has no use for from > until.
+        from_ts = int(start)
+        until_ts = max(from_ts, int(now))
         self._window_start = now
         text = folded(stacks)
         if text and self.on_window is not None:
@@ -293,20 +301,20 @@ class Sampler:
     def _run(self):
         # An absolute schedule: each tick is due one period after the last was due, not
         # one period after it finished, so the rate does not drift with the work done.
-        # The wait is on the stop event so that stopping does not wait out a period.
+        # It runs on the monotonic clock, because the wall clock is stepped by NTP at
+        # boot and a step must neither stall the sampler nor fire a burst of ticks.
+        # Missed ticks are skipped, not replayed: in cpu mode the next tick attributes
+        # the whole CPU delta anyway, and a burst of catch-up ticks would land exactly
+        # when the box is already starved. The wait is on the stop event so that
+        # stopping does not wait out a period.
         period = 1.0 / self.hz
-        next_tick = time.time()
-        while not self._stop.wait(max(0.0, next_tick - time.time())):
-            now = time.time()
+        next_tick = time.monotonic()
+        while not self._stop.wait(max(0.0, next_tick - time.monotonic())):
             try:
-                self.tick(now)
+                self.tick(time.time())
             except Exception as e:
                 log.debug("Profile sample failed: %s", e)
-            next_tick += period
-            # Suspended, or starved for longer than a window: catch up by starting the
-            # schedule again from now, rather than spinning through every missed tick.
-            if time.time() - next_tick > self.window:
-                next_tick = time.time()
+            next_tick = max(next_tick + period, time.monotonic())
 
 
 # ─────────────────────────────── the uploader ───────────────────────────────
