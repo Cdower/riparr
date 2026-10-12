@@ -92,21 +92,27 @@ def start(tmp, port):
         [sys.executable, "-m", "uvicorn", "riparr.main:app", "--host", "127.0.0.1",
          "--port", str(port), "--log-level", "warning"],
         cwd=HERE, env=env, stdout=subprocess.DEVNULL, stderr=errlog)
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            break
-        try:
-            if Client("127.0.0.1", port).request("GET", "/api/setup/state")[0] == 200:
-                return proc
-        except OSError:
-            pass
-        time.sleep(0.2)
-    proc.kill()
-    proc.wait()
-    errlog.seek(0)
-    sys.stderr.write("The service did not start within 30 s:\n" + errlog.read())
-    sys.exit(2)
+    try:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                break
+            try:
+                if Client("127.0.0.1", port).request("GET", "/api/setup/state")[0] == 200:
+                    return proc
+            except OSError:
+                pass
+            time.sleep(0.2)
+        errlog.seek(0)
+        sys.stderr.write("The service did not start within 30 s:\n" + errlog.read())
+        sys.exit(2)
+    except BaseException:
+        # Ctrl-C or a failed start must not leave uvicorn holding the port and the
+        # database, so the child dies with whatever interrupted the wait.
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        raise
 
 
 def login(client, user, password, first_run):
@@ -277,29 +283,15 @@ def markdown(result, mode, cycles):
     return "\n".join(out)
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--cycles", type=int, default=200)
-    ap.add_argument("--idle", type=float, default=15)
-    ap.add_argument("--json", metavar="PATH")
-    ap.add_argument("--keep", metavar="DIR", help="copy the .folded files here")
-    ap.add_argument("--url", help="benchmark a running box instead of starting one")
-    ap.add_argument("--user", default=USER)
-    ap.add_argument("--password", default=PASSWORD)
-    args = ap.parse_args()
+def run_local(args, result):
+    """Start a throwaway service, measure it, and clean up whatever happens.
 
-    result = {}
-    mode = None
-    if args.url:
-        u = urllib.parse.urlsplit(args.url)
-        client = Client(u.hostname, u.port or 80)
-        login(client, args.user, args.password, first_run=False)
-        cycle(client, 1)
-        result["poll"] = poll(client, None, args.cycles)
-    else:
-        from riparr import profiling
-        mode = profiling.MODE
-        tmp = tempfile.mkdtemp(prefix="riparr-bench-")
+    The temp directory holds a database and the profile windows, so it is removed in the
+    `finally` along with the child: a failed login or Ctrl-C must leave neither behind.
+    """
+    from riparr import profiling
+    tmp = tempfile.mkdtemp(prefix="riparr-bench-")
+    try:
         port = free_port()
         proc = start(tmp, port)
         try:
@@ -318,7 +310,35 @@ def main():
             for name in os.listdir(prof_dir) if os.path.isdir(prof_dir) else []:
                 if name.endswith(".folded"):
                     shutil.copy(os.path.join(prof_dir, name), args.keep)
+    finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    return profiling.MODE
+
+
+def main():
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
+    ap.add_argument("--cycles", type=int, default=200)
+    ap.add_argument("--idle", type=float, default=15)
+    ap.add_argument("--json", metavar="PATH")
+    ap.add_argument("--keep", metavar="DIR", help="copy the .folded files here")
+    ap.add_argument("--url", help="benchmark a running box instead of starting one")
+    ap.add_argument("--user", default=USER)
+    ap.add_argument("--password", default=PASSWORD)
+    args = ap.parse_args()
+    # A plain SIGTERM would kill this process without running the cleanup, so it is
+    # turned into the same exit Ctrl-C takes.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(130))
+
+    result = {}
+    mode = None
+    if args.url:
+        u = urllib.parse.urlsplit(args.url)
+        client = Client(u.hostname, u.port or 80)
+        login(client, args.user, args.password, first_run=False)
+        cycle(client, 1)
+        result["poll"] = poll(client, None, args.cycles)
+    else:
+        mode = run_local(args, result)
 
     print(markdown(result, mode, args.cycles))
     if args.json:

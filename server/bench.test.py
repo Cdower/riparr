@@ -10,6 +10,7 @@ Run: uv run --locked python bench.test.py
 """
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -30,10 +31,20 @@ def check(name, got, want):
 with tempfile.TemporaryDirectory() as tmp:
     out = os.path.join(tmp, "out.json")
     keep = os.path.join(tmp, "kept")
-    run = subprocess.run(
+    # Its own session, so a timeout can take the bench and the server it started down
+    # together. Killing only the bench with SIGKILL would skip its cleanup and leave
+    # uvicorn running.
+    child = subprocess.Popen(
         [sys.executable, "bench.py", "--cycles", "6", "--idle", "1", "--json", out,
          "--keep", keep],
-        cwd=HERE, capture_output=True, text=True, timeout=120)
+        cwd=HERE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        start_new_session=True)
+    try:
+        stdout, stderr = child.communicate(timeout=120)
+    except subprocess.TimeoutExpired:
+        os.killpg(child.pid, signal.SIGKILL)
+        raise
+    run = subprocess.CompletedProcess(child.args, child.returncode, stdout, stderr)
     if run.returncode:
         print(run.stdout, run.stderr)
     check("exit status", run.returncode, 0)
