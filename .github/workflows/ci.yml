@@ -207,13 +207,25 @@ jobs:
         run: |
           python server/backup-pipeline.test.py
 
+      # The tests from here on that import the service itself need fastapi, and the
+      # runner's Python has none. The steps above never needed it: they exercise pipeline
+      # modules that import only the standard library, so they stay on the runner's
+      # Python. Without this, the restore test fails on `import fastapi` before it tests
+      # anything, and every step after it is skipped, which reads as a regression and is
+      # one missing install. The versions are the ones the box runs, from the same lock
+      # file.
+      - name: The service's dependencies, for the tests that import it
+        run: |
+          python -m venv /tmp/venv-tests
+          /tmp/venv-tests/bin/pip install -q -r server/requirements.txt
+
       # A restore put the settings back and threw the shares and the disc history away,
       # while saying the shares only needed a password. And none of the three doors a
       # setting arrives through looked at the value, so text where a number belonged
       # was a 500 on every dashboard poll.
       - name: A backup restores everything it carried
         run: |
-          python server/backup-restore.test.py
+          /tmp/venv-tests/bin/python server/backup-restore.test.py
 
       # Two cancels that were heard and then ignored: one during the identify scan,
       # overwritten by "queued" when the scan finished; one during a real upload,
@@ -234,16 +246,6 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends cd-paranoia libcdio-utils \
             flac lame opus-tools vorbis-tools libarchive-tools xorriso ffmpeg >/dev/null
           python server/music-pipeline.test.py
-
-      # The tests below import the service itself, and the runner's Python has no fastapi.
-      # The steps above never needed it: they exercise pipeline modules that import only
-      # the standard library. Without this the next five fail on `import fastapi` before
-      # they test anything, which reads as five regressions and is one missing install.
-      # The versions are the ones the box runs, from the same lock file.
-      - name: The service's dependencies, for the tests that import it
-        run: |
-          python -m venv /tmp/venv-tests
-          /tmp/venv-tests/bin/pip install -q -r server/requirements.txt
 
       # The sampling profiler, against a local Pyroscope stand-in. It checks the folded
       # format the ingest endpoint parses, the basic-auth header, that a stack is weighted
