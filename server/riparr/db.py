@@ -509,7 +509,7 @@ def init():
 # Settings, as their stored JSON text, keyed by name; None means "no row". `get` used to
 # be a SELECT every time, and one /api/status poll makes a dozen of them. The cache is
 # process-wide although `conn()` is per-thread, which is correct because every write to
-# the table in this process goes through `set()` (which updates the entry) or is followed
+# the table in this process goes through `set()` (which evicts the entry) or is followed
 # by `settings_changed()` (which empties it). The text is kept rather than the decoded
 # value so each caller gets its own copy: a caller that appends to a list it was handed
 # must not change what the next caller reads.
@@ -555,8 +555,13 @@ def set(key, value):
               "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
               (key, raw))
     c.commit()
+    # Evict rather than fill. Two set()s of one key on different threads can commit in
+    # one order and reach this lock in the other, and filling here would then leave the
+    # loser's value cached over the winner's row until the next write. Dropping the
+    # entry makes the next get() read whatever was committed last; the generation bump
+    # stops a get() that was already mid-SELECT from filing the old row.
     with _settings_lock:
-        _settings[key] = raw
+        _settings.pop(key, None)
         _settings_gen += 1
     return value
 
