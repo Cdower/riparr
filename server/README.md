@@ -77,6 +77,22 @@ brew install libcdio libcdio-paranoia flac lame opus-tools vorbis-tools ffmpeg
 | `ffmpeg`, `ffprobe` | `ffmpeg` |
 | `bsdtar` | ships with macOS |
 
+`bench.py` is not a test but lives beside them. It starts the service in mock mode on a
+throwaway database, signs in, and drives the mix the browser polls (the queue, the status
+and the autorip state each cycle, the power page every third). It reports each endpoint's
+p50, p95 and worst latency, the process's CPU seconds idle and per cycle under load, and
+the hottest frames from the profiler's local dump. On macOS that profile counts wall
+time, so read its shape rather than its percentages. `--json PATH` saves the numbers and
+`--keep DIR` keeps the `.folded` files, which load in speedscope.app as "collapsed
+stacks". Run it before and after a change that is meant to make the service cheaper:
+
+```sh
+uv run --locked python bench.py
+uv run --locked python bench.py --url http://riparr.local:9797 --user U --password P
+```
+
+The second form skips the idle and profile parts and measures a real box over the network.
+
 The data-CD case builds its ISO with `xorriso` when there is one and falls back to
 macOS's own `hdiutil`, so `xorriso` is optional here. CI installs the Debian equivalents;
 see the music step in `.github/workflows/ci.yml`.
