@@ -1,0 +1,42 @@
+[project]
+name = "riparr-flasher"
+version = "0.0.0"
+description = "Scripted TUI that writes a Riparr card."
+# Runs under the Python macOS ships.
+requires-python = ">=3.9"
+dependencies = [
+    # SHA-512 crypt; macOS crypt(3) silently emits DES instead
+    "passlib>=1.7",
+    # Optional but strongly recommended on macOS: live Wi-Fi scan with SSID, band and signal
+    "pyobjc-framework-CoreWLAN>=10 ; sys_platform == 'darwin'",
+]
+
+[dependency-groups]
+dev = ["ty"]
+
+[tool.uv]
+package = false
+
+[tool.ty.environment]
+python-version = "3.9"
+# riparr-flash.py puts ../preparer on sys.path for `core`.
+extra-paths = ["../preparer"]
+
+[tool.ty.analysis]
+# Modules that create their members at import time, so there is nothing for ty to read.
+replace-imports-with-any = ["CoreWLAN", "passlib.*"]
+
+# This code is unannotated, so ty infers types from literals -- a dict built with None
+# values is a dict of None -- and these rules mostly report that inference rather than
+# a bug. They stay visible as warnings; undefined names and bad imports still fail.
+[tool.ty.rules]
+invalid-argument-type = "warn"
+invalid-assignment = "warn"
+invalid-parameter-default = "warn"
+missing-argument = "warn"
+no-matching-overload = "warn"
+not-iterable = "warn"
+not-subscriptable = "warn"
+too-many-positional-arguments = "warn"
+unresolved-attribute = "warn"
+unsupported-operator = "warn"

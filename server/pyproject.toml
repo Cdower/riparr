@@ -1,0 +1,47 @@
+[project]
+name = "riparr-server"
+version = "0.0.0"
+description = "The Riparr appliance service."
+# The box runs Debian trixie (3.13); 3.11 leaves room for a bookworm install.
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    # Not uvicorn[standard]: that pulls uvloop, httptools and watchfiles, which are native
+    # builds worth minutes of CPU on a Zero 2 W and a hard failure if a wheel is missing.
+    # The UI polls over plain HTTP and uses no websockets, so the pure-Python stack is enough.
+    "uvicorn>=0.27",
+    "passlib>=1.7",
+    "itsdangerous>=2.1",
+    "python-multipart>=0.0.9",
+]
+
+[dependency-groups]
+dev = ["ty"]
+
+[tool.uv]
+# Run from a checkout, never installed as a package.
+package = false
+
+[tool.ty.environment]
+python-version = "3.11"
+# updater-swap.test.py puts ../tools/preparer on sys.path for `core`.
+extra-paths = ["../tools/preparer"]
+
+[tool.ty.analysis]
+# Modules that create their members at import time, so there is nothing for ty to read.
+replace-imports-with-any = ["passlib.*"]
+
+# This code is unannotated, so ty infers types from literals -- a dict built with None
+# values is a dict of None -- and these rules mostly report that inference rather than
+# a bug. They stay visible as warnings; undefined names and bad imports still fail.
+[tool.ty.rules]
+invalid-argument-type = "warn"
+invalid-assignment = "warn"
+invalid-parameter-default = "warn"
+missing-argument = "warn"
+no-matching-overload = "warn"
+not-iterable = "warn"
+not-subscriptable = "warn"
+too-many-positional-arguments = "warn"
+unresolved-attribute = "warn"
+unsupported-operator = "warn"

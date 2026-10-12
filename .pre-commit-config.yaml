@@ -1,0 +1,47 @@
+# Run by prek before every commit. Install once per clone with `prek install`;
+# `prek run --all-files` checks the whole tree.
+#
+# server/, tools/flasher/ and tools/preparer/ are three separate uv projects, each with
+# its own lockfile and environment, so ty runs once per project inside that project's
+# environment. ruff is configured once, in ruff.toml at the root.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.0
+    hooks:
+      - id: ruff-check
+
+  - repo: local
+    hooks:
+      # The box installs with pip from server/requirements.txt -- tools/install.sh, the
+      # self-updater on boxes already in the field, and the release payload all read it --
+      # so it is generated from server/uv.lock rather than written by hand.
+      - id: server-requirements
+        name: server/requirements.txt matches uv.lock
+        entry: uv export --directory server --locked --no-dev --no-hashes --quiet --output-file requirements.txt
+        language: system
+        files: ^server/(pyproject\.toml|uv\.lock|requirements\.txt)$
+        pass_filenames: false
+
+      - id: ty-server
+        name: ty (server)
+        entry: uv run --directory server --locked ty check --exit-zero-on-warning --output-format concise
+        language: system
+        types: [python]
+        files: ^(server|tools/preparer)/
+        pass_filenames: false
+
+      - id: ty-flasher
+        name: ty (tools/flasher)
+        entry: uv run --directory tools/flasher --locked ty check --exit-zero-on-warning --output-format concise
+        language: system
+        types: [python]
+        files: ^tools/(flasher|preparer)/
+        pass_filenames: false
+
+      - id: ty-preparer
+        name: ty (tools/preparer)
+        entry: uv run --directory tools/preparer --locked ty check --exit-zero-on-warning --output-format concise
+        language: system
+        types: [python]
+        files: ^tools/preparer/
+        pass_filenames: false

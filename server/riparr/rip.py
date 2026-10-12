@@ -29,7 +29,6 @@ does not fit, which is D10 as originally written -- the refusal D11 was meant to
 retire. `Transport.supports_follow_copy` is the seam; when it goes True, only
 `_plan_transfer` below needs to change.
 """
-import json
 import os
 import re
 import shutil

@@ -161,13 +161,21 @@ Deliberate limits, so they don't surprise you:
 sudo bash tools/install.sh          # → http://riparr.local:9797
 
 # On your own machine, just to poke at the interface
-cd server && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-RIPARR_MOCK=1 .venv/bin/python -m uvicorn riparr.main:app --port 9797
+cd server && RIPARR_MOCK=1 uv run python -m uvicorn riparr.main:app --port 9797
 
 # The Preparer, from a checkout
-pip install -r tools/preparer/requirements.txt
-python3 tools/preparer/shell.py
+uv run --directory tools/preparer shell.py
 ```
+
+`server/`, `tools/preparer/` and `tools/flasher/` are separate [uv](https://docs.astral.sh/uv/)
+projects, each with its own `pyproject.toml` and `uv.lock`. `server/requirements.txt` is
+generated from `server/uv.lock` for the box, which installs with pip; edit
+`server/pyproject.toml` and let the pre-commit hook regenerate it.
+
+Before committing, install the hooks once per clone with `prek install`. They run
+[ruff](https://docs.astral.sh/ruff/) over every Python file and
+[ty](https://docs.astral.sh/ty/) over each project; `prek run --all-files` runs them on
+demand.
 
 ## Documents
 

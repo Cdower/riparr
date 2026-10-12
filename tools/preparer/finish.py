@@ -26,7 +26,6 @@ already uses -- see `publish()`. Nothing here writes to stdout unless run as a C
 import argparse
 import os
 import re
-import shutil
 import socket
 import subprocess
 import sys

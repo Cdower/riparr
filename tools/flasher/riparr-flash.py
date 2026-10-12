@@ -5,13 +5,12 @@ Riparr Flasher — prepares an SD card for a Riparr appliance.
 Scans for nearby Wi-Fi, filters to what a Pi Zero 2W can actually join,
 provisions hostname/user/SSH/Wi-Fi via custom.toml, and writes the image.
 """
-import os, re, sys, json, time, hashlib, subprocess, argparse
+import os, re, sys, time, subprocess, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "preparer"))
 import core          # single source of truth for PSK, $6$ hashing and the TOML schema
 from riparr_ui import *
 from riparr_ui import NoTTY
-import riparr_ui as U
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = HERE          # where the image, ssh key and password file live

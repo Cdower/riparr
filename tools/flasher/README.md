@@ -51,12 +51,12 @@ credentials are already cached.
 
 ## A launcher keeps the invocation short
 
-Put the image, keys and venv in one directory and drop a two-line script beside them:
+Put the image and keys in one directory and drop a two-line script beside them:
 
 ```sh
 #!/bin/bash
 cd "$(dirname "$0")"
-exec ./.venv/bin/python /path/to/tools/flasher/riparr-flash.py --assets "$(pwd)" "$@"
+exec uv run --project /path/to/tools/flasher /path/to/tools/flasher/riparr-flash.py --assets "$(pwd)" "$@"
 ```
 
 Keep that directory somewhere durable — it holds the SSH private key and the account
@@ -65,9 +65,7 @@ password for every box you flash. A temp directory is the wrong home for it.
 ## Setup
 
 ```sh
-python3 -m venv .venv
-./.venv/bin/pip install -r requirements.txt
-./.venv/bin/python riparr-flash.py --assets /path/to/build/dir
+uv run riparr-flash.py --assets /path/to/build/dir
 ```
 
 CoreWLAN is optional. Without it the wizard degrades to `system_profiler` (band info, but

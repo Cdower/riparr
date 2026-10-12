@@ -76,11 +76,15 @@ jobs:
             libgirepository1.0-dev gir1.2-girepository-2.0 libcairo2-dev \
             pkg-config python3-dev gir1.2-gtk-3.0 gir1.2-webkit2-4.1 libwebkit2gtk-4.1-0
 
+      - uses: astral-sh/setup-uv@v10.3.0
+
+      # The versions in tools/preparer/uv.lock, PyInstaller among them, installed into the
+      # Python above -- the one every later step calls as `python` and `pyinstaller`.
       - name: Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r tools/preparer/requirements.txt
-          pip install pyinstaller
+          uv export --directory tools/preparer --locked --no-dev --output-file "${{ runner.temp }}/preparer-requirements.txt"
+          pip install -r "${{ runner.temp }}/preparer-requirements.txt"
 
       # Gather the appliance next to the app before building, so --add-data names one
       # local directory on every platform. Reaching up out of the build directory with

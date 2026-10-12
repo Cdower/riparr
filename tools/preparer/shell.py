@@ -22,10 +22,8 @@ The bridge shape is kept deliberately: pywebview exposes methods at
 `window.pywebview.api.<name>`, and a few injected lines alias that to `window.riparr`,
 so not one line of `ui/app.js` changes.
 """
-import json
 import os
 import sys
-import threading
 
 # ── the elevated card writer is this same binary, re-invoked ──
 #
@@ -92,7 +90,6 @@ if sys.platform.startswith("linux") and getattr(sys, "frozen", False):
 import webview
 
 import bridge as _bridge
-import core
 import hostos
 
 HERE = os.path.dirname(os.path.abspath(__file__))

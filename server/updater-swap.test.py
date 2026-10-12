@@ -17,7 +17,6 @@ So the two things asserted here are the two that were wrong:
 """
 import os
 import shutil
-import subprocess
 import sys
 import tarfile
 import tempfile

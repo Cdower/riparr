@@ -9,10 +9,9 @@ macOS and Windows, `.tar.gz` for Linux. There is no installer.
 From a checkout:
 
 ```sh
-pip install -r requirements.txt
-python3 shell.py                    # any operating system
-python3 app.py                      # macOS only; the hand-built NSWindow
-python3 selftest.py                 # checks that need no card
+uv run shell.py                     # any operating system
+uv run app.py                       # macOS only; the hand-built NSWindow
+uv run selftest.py                  # checks that need no card
 ```
 
 No terminal interaction, no arrow-key menus. The system asks for permission once, in its
@@ -163,9 +162,7 @@ password for every box you flash. A temp directory is the wrong home for it.
 ## Setup
 
 ```sh
-python3 -m venv .venv
-./.venv/bin/pip install -r ../flasher/requirements.txt pyobjc-framework-WebKit
-./.venv/bin/python app.py --assets ~/riparr-build
+uv run app.py --assets ~/riparr-build
 ```
 
 ## If you need to script it

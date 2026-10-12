@@ -13,6 +13,29 @@ on:
   pull_request:
 
 jobs:
+  # The same hooks that run before every commit, for the commits made without them:
+  # ruff over every Python file, ty over each uv project, and server/requirements.txt
+  # still matching server/uv.lock.
+  hooks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # ty checks the Preparer inside its own environment, and on Linux that environment
+      # has PyGObject in it, which builds from source against these.
+      - name: PyGObject build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgirepository1.0-dev libcairo2-dev pkg-config python3-dev
+
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+
+      - name: prek
+        run: uvx prek@0.5.5 run --all-files --show-diff-on-failure
+
   check:
     runs-on: ubuntu-latest
     steps:

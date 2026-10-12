@@ -10,8 +10,6 @@ the bridge between JavaScript and Python.
 """
 import json
 import os
-import socket
-import subprocess
 import sys
 import tempfile
 import threading
@@ -20,7 +18,7 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import objc
-from AppKit import (NSApplication, NSWindow, NSApp, NSScreen, NSColor, NSView,
+from AppKit import (NSApplication, NSWindow, NSApp, NSView,
                     NSAlert, NSTextField, NSAlertFirstButtonReturn,
                     NSBitmapImageRep, NSViewWidthSizable, NSViewMinYMargin,
                     NSViewHeightSizable,
@@ -28,13 +26,12 @@ from AppKit import (NSApplication, NSWindow, NSApp, NSScreen, NSColor, NSView,
                     NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
                     NSWindowStyleMaskMiniaturizable, NSWindowStyleMaskResizable,
                     NSWindowStyleMaskFullSizeContentView, NSWindowTitleVisible,
-                    NSMakeRect, NSMakeSize, NSWorkspace)
+                    NSMakeRect, NSMakeSize)
 from Foundation import NSObject, NSURL, NSString, NSTimer
 from WebKit import (WKWebView, WKWebViewConfiguration, WKUserContentController,
-                    WKUserScript, WKPreferences, WKSnapshotConfiguration)
+                    WKUserScript, WKSnapshotConfiguration)
 
 import bridge as _bridge
-import core
 import shots
 
 # No VERSION here. This module is the superseded hand-built NSWindow (see shell.py),

@@ -1,0 +1,13 @@
+# Shared by server/, tools/flasher/ and tools/preparer/, and by the loose scripts in
+# tools/ and packaging/. The Preparer and flasher run on the Python macOS ships.
+target-version = "py39"
+extend-exclude = ["tools/preparer/payload"]
+
+[lint]
+# House style, not mistakes: `if x: return y` on one line, several stdlib imports on
+# one line, `l` for a line, and imports below the `sys.path` line that makes them work.
+ignore = ["E401", "E402", "E701", "E702", "E741"]
+
+[lint.per-file-ignores]
+# The TUI's drawing helpers are imported wholesale.
+"tools/flasher/riparr-flash.py" = ["F403", "F405"]

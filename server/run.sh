@@ -9,6 +9,13 @@
 set -e
 cd "$(dirname "$0")"
 
+# With uv, the environment is server/uv.lock exactly. Without it, pip installs
+# requirements.txt, which is generated from the same lock.
+if command -v uv >/dev/null 2>&1; then
+  exec uv run --locked python -m uvicorn riparr.main:app \
+    --host "${RIPARR_HOST:-0.0.0.0}" --port "${RIPARR_PORT:-8000}" "$@"
+fi
+
 PY="${RIPARR_PYTHON:-python3}"
 
 if [ ! -x ./.venv/bin/python ]; then
