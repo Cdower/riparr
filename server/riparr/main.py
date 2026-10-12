@@ -812,10 +812,29 @@ def get_settings(user=Depends(require_user)):
     return _redact(db.all_settings())
 
 
+def _json_body(body):
+    """The parsed body, whatever Content-Type it came with.
+
+    `Body(...)` parses JSON only when the request says it is JSON; anything else arrives
+    as the raw bytes. These handlers used to call `await request.json()`, which parsed
+    regardless, so a `curl -d '{...}'` with no header worked, and an API-first service
+    should not start refusing it. Bytes that are not JSON come back as None, which the
+    caller's "Expected an object" check turns into the same 400 as before.
+    """
+    if isinstance(body, (bytes, bytearray)):
+        try:
+            return json.loads(body)
+        except ValueError:
+            # JSONDecodeError and UnicodeDecodeError are both ValueErrors.
+            return None
+    return body
+
+
 @app.put("/api/settings")
 def put_settings(body: Any = Body(...), user=Depends(require_user)):
     # A plain `def`, so FastAPI runs it on the threadpool: the validation and the SQLite
     # commits below used to block the event loop and stall every poll in flight.
+    body = _json_body(body)
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Expected an object")
     body.pop("session_secret", None)
@@ -1833,6 +1852,7 @@ def config_import(body: Any = Body(...), user=Depends(require_user)):
     keeps the export file from being a credential for your NAS on top of everything else
     it already carries.
     """
+    body = _json_body(body)
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Expected an object")
 

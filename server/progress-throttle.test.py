@@ -23,6 +23,8 @@ _tmp = tempfile.mkdtemp(prefix="riparr-throttle-test-")
 os.environ["RIPARR_DB"] = os.path.join(_tmp, "test.db")
 os.environ["RIPARR_APPLIANCE"] = "0"
 
+from fastapi import HTTPException  # noqa: E402
+
 from riparr import db, main, rip  # noqa: E402
 
 failures = []
@@ -90,6 +92,30 @@ for fn in (main.put_settings, main.config_import, main.system_backup_upload):
     check("%s is not a coroutine function" % fn.__name__, inspect.iscoroutinefunction(fn), False)
 check("put_settings takes the body directly",
       main.put_settings({"theme": "dark"}, user=None)["theme"], "dark")
+
+
+def status_of(fn, body):
+    """The HTTP status a handler raises for `body`, or 200 when it returns."""
+    try:
+        fn(body, user=None)
+    except HTTPException as e:
+        return e.status_code
+    return 200
+
+
+# A request without `Content-Type: application/json` reaches the handler as raw bytes.
+# `await request.json()` parsed those regardless, so `curl -d '{...}'` with no header
+# worked, and it must go on working now that the body comes from `Body(...)`.
+print("\na body sent without a JSON Content-Type is still parsed")
+check("put_settings parses raw JSON bytes",
+      main.put_settings(b'{"theme": "light"}', user=None)["theme"], "light")
+check("put_settings refuses bytes that are not JSON with a 400",
+      status_of(main.put_settings, b"not json"), 400)
+check("put_settings refuses bytes that are not UTF-8 with a 400",
+      status_of(main.put_settings, b"\xff\xfe{"), 400)
+check("config_import refuses bytes that are not JSON with a 400",
+      status_of(main.config_import, b"not json"), 400)
+check("config_import refuses a JSON array as before", status_of(main.config_import, b"[]"), 400)
 
 print("\n%d failures" % len(failures) if failures else "\nall good")
 sys.exit(1 if failures else 0)
