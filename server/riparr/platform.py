@@ -5,7 +5,9 @@ The rest of the codebase talks to this module and never shells out directly, so 
 whole app runs on a laptop with realistic fake data and runs unchanged on the Pi.
 `IS_APPLIANCE` is the only switch.
 """
+import copy
 import datetime
+import functools
 import hashlib
 import json
 import os
@@ -41,6 +43,58 @@ def _is_appliance():
 
 IS_APPLIANCE = _is_appliance()
 MOCK = not IS_APPLIANCE
+
+
+# Every cached function registers its store here, so `_ttl_clear` can empty them all at
+# once -- which tests need when they flip mock state between calls.
+_ttl_stores = []
+_ttl_lock = threading.Lock()
+
+
+def _ttl(seconds, clock=time.monotonic):
+    """Remember a function's answer for `seconds`, per distinct arguments.
+
+    The browser polls /api/status every 1.2 s during a rip and the LED thread asks
+    about Wi-Fi every second; several of the answers behind those polls cost a
+    subprocess or a walk through sysfs on a 1 GHz board, and none of them changes
+    faster than a person could notice. Each decorated function says how stale it may
+    be and why that is harmless.
+
+    The cache wraps the whole function, MOCK branch included, so mock callers see no
+    difference but speed. One lock for every store: the critical section is a dict
+    lookup, and the function itself runs outside it, so two threads that miss at once
+    both compute (harmless) rather than one waiting on the other's subprocess.
+
+    Callers get a deep copy, never the remembered object: several of them `dict()` or
+    `update()` what they are handed, and a cache that let that leak into the next
+    caller's answer would be wrong rather than merely stale. `clock` is injectable so a
+    test can step time instead of sleeping.
+    """
+    def wrap(fn):
+        store = {}
+        with _ttl_lock:
+            _ttl_stores.append(store)
+
+        @functools.wraps(fn)
+        def cached(*args):
+            now = clock()
+            with _ttl_lock:
+                hit = store.get(args)
+            if hit is not None and now < hit[0]:
+                return copy.deepcopy(hit[1])
+            value = fn(*args)
+            with _ttl_lock:
+                store[args] = (now + seconds, value)
+            return copy.deepcopy(value)
+        return cached
+    return wrap
+
+
+def _ttl_clear():
+    """Forget every remembered answer, so the next call to each asks again."""
+    with _ttl_lock:
+        for store in _ttl_stores:
+            store.clear()
 
 
 def hostname():
@@ -404,6 +458,10 @@ def _usb_devices():
     return devs
 
 
+# A minute. Device-tree globs and a boot-env read for a fact that does not change while
+# the box is up: the overlay `usb_host_fix` asks for only takes effect after the restart
+# it triggers, which starts with an empty cache.
+@_ttl(60)
 def usb_host_ports():
     """What the USB controllers on this board are actually configured to do.
 
@@ -438,7 +496,7 @@ def _read_boot_env():
     return env
 
 
-def optical_diagnosis():
+def optical_diagnosis(drives=None):
     """Why there is no drive — not merely that there isn't one.
 
     "No optical drive detected" is true and unhelpful: it cannot distinguish a drive
@@ -448,8 +506,12 @@ def optical_diagnosis():
 
     `fixable` says the box can do something about it itself, and the interface offers a
     button rather than a paragraph.
+
+    `drives` is the caller's `optical_drives()` answer when it already has one:
+    /api/status asks once and hands the same list to everything that needs it.
     """
-    drives = optical_drives()
+    if drives is None:
+        drives = optical_drives()
     ports = usb_host_ports()
     if drives:
         return {"drives": drives, "usb": [], "hint": None, "ports": ports,
@@ -529,16 +591,26 @@ def clock_status():
     if MOCK:
         return {"now": now, "synced": True, "plausible": True, "source": "simulated"}
 
-    synced = None
-    if os.path.exists("/run/systemd/timesync/synchronized"):
-        synced = True
-    else:
-        out = _run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"]) or ""
-        if out.strip():
-            synced = out.strip().lower() in ("yes", "true", "1")
+    synced = _ntp_synced()
     plausible = now >= CLOCK_FLOOR
     return {"now": now, "synced": synced, "plausible": plausible,
             "source": "ntp" if synced else "unknown"}
+
+
+# The dict above is not cached because it carries `now`; this is the expensive half of
+# it, a `timedatectl` subprocess. Thirty seconds: once NTP has synchronised it stays that
+# way, and until it has, the dates are already hidden -- learning of the sync half a
+# minute late only hides them half a minute longer. /api/status used to ask twice per
+# poll (once directly, once through `trust_dates` in the Auto Rip checklist).
+@_ttl(30)
+def _ntp_synced():
+    """True, False, or None when nothing will say."""
+    if os.path.exists("/run/systemd/timesync/synchronized"):
+        return True
+    out = _run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"]) or ""
+    if out.strip():
+        return out.strip().lower() in ("yes", "true", "1")
+    return None
 
 
 def trust_dates():
@@ -986,6 +1058,9 @@ def eject(device="/dev/sr0"):
 
 # ─────────────────────────────── wi-fi ───────────────────────────────
 
+# The wireless interface's name is fixed by the kernel at boot; a minute is only so a
+# USB adapter plugged in later is not ignored forever.
+@_ttl(60)
 def _wifi_iface():
     for path in _glob("/sys/class/net/*/wireless"):
         return path.split("/")[4]
@@ -1004,6 +1079,10 @@ def _dbm_to_quality(dbm):
     return max(0, min(100, int(round(2 * (dbm + 100)))))
 
 
+# Three seconds. The browser polls /api/status every 1.2 s during a rip and the LED
+# thread asks every second, and each call was an `iw` subprocess. A Wi-Fi bar that is
+# three seconds behind the radio is indistinguishable from one that is not.
+@_ttl(3)
 def wifi_status():
     """What the box is actually associated with.
 
@@ -1450,6 +1529,10 @@ def wifi_connect(ssid, password):
 
 # ─────────────────────────────── makemkv ───────────────────────────────
 
+# Two seconds: long enough that /api/status and the Auto Rip checklist inside it share
+# one answer, short enough that a key saved or an install finished shows on the next
+# poll.
+@_ttl(2)
 def makemkv_status():
     """The one setting that needs periodic attention, so it is reported first-class."""
     if MOCK:

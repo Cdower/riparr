@@ -37,10 +37,20 @@ app = FastAPI(title="Riparr", version=__version__, docs_url=_DOCS,
               openapi_url=_OPENAPI)
 
 
+# The signing secret, read once. Every authenticated request verifies its cookie with it,
+# and the only thing that ever changes it is `_rotate_secret`, which replaces this too:
+# PUT /api/settings and both restore doors refuse to write `session_secret` at all.
+_SECRET = None
+
+
 def _secret():
+    global _SECRET
+    if _SECRET:
+        return _SECRET
     s = db.get("session_secret")
     if not s:
         s = db.set("session_secret", os.urandom(32).hex())
+    _SECRET = s
     return s
 
 
@@ -49,7 +59,9 @@ def _rotate_secret():
     one. This is how a password change logs out other devices: the sessions are
     stateless (nothing to delete), so revocation is done by changing the key they were
     signed under."""
-    return db.set("session_secret", os.urandom(32).hex())
+    global _SECRET
+    _SECRET = db.set("session_secret", os.urandom(32).hex())
+    return _SECRET
 
 
 # ─────────────────────────────── password recovery ───────────────────────────────
@@ -370,6 +382,13 @@ def _capacity(free_bytes, direct=None):
 
 @app.get("/api/status")
 def status(user=Depends(require_user)):
+    # Each fact is asked for once and handed to everything that needs it. This poll
+    # runs every 1.2 s during a rip, and it used to enumerate the drives three times
+    # (here, in the diagnosis and in the Auto Rip checklist) and ask MakeMKV, the
+    # default share and the card twice each.
+    drives = P.optical_drives()
+    mk = P.makemkv_status()
+    share = db.default_share()
     storage = P.storage_status()
     # The user should never see a gigabyte: capacity is expressed in discs and mode.
     return {
@@ -377,17 +396,17 @@ def status(user=Depends(require_user)):
         "hostname": P.hostname(),
         "system": P.system_status(),
         "storage": dict(storage, **_capacity(storage["free_bytes"])),
-        "optical": P.optical_diagnosis(),
+        "optical": P.optical_diagnosis(drives=drives),
         "clock": P.clock_status(),
         "wifi": P.wifi_status(),
-        "makemkv": P.makemkv_status(),
-        "drives": _drive_report(),
+        "makemkv": mk,
+        "drives": _drive_report(drives=drives),
         # Four fields, not the row. The row carries the SMB password, and the browser
         # has never needed it -- same argument as /api/setup/state, which was handing
         # it out to anyone at all.
-        "share": _share_out(db.default_share()),
+        "share": _share_out(share),
         "setup_complete": bool(db.get("setup_complete")),
-        "autorip": _autorip_state(),
+        "autorip": _autorip_state(mk=mk, share=share, drives=drives, storage=storage),
         # A refused duplicate leaves no job and no file, so this is the only trace of
         # it. The page turns it into "you already ripped this, here it is".
         "duplicate": RIP.pending_duplicate(),
@@ -547,16 +566,17 @@ def _reads_phrase(drive):
     return ", ".join(parts)
 
 
-def _drive_report():
+def _drive_report(drives=None):
     """The drives, plus the two things that are too expensive for the disc watcher.
 
     `optical_drives()` runs every three seconds and stays cheap. LibreDrive costs a
     `makemkvcon` run and the UHD label is derived from it, so both are attached here,
-    on the status request a human made.
+    on the status request a human made. `drives` is the caller's own answer when it
+    has one, so /api/status enumerates them once.
     """
     out = []
     busy = db.active_job() is not None
-    for d in P.optical_drives():
+    for d in (P.optical_drives() if drives is None else drives):
         d = dict(d)
         # Ask MakeMKV about LibreDrive only when it cannot get in the way. The probe is
         # a two-minute `makemkvcon` run that holds the drive, and rip.py:136 already
@@ -621,7 +641,7 @@ def _space_warning(drive):
             % (size // 2 ** 30, free // 2 ** 30))
 
 
-def _autorip_state():
+def _autorip_state(mk=None, share=None, drives=None, storage=None):
     """Auto Rip's prerequisites, every one of them, whether or not it is met.
 
     This used to return only the things that were wrong. That is the right shape for
@@ -636,11 +656,16 @@ def _autorip_state():
       warn  Auto Rip still runs, but a disc put in right now may not get ripped --
             the card is full, or the key dies this week
       fail  Auto Rip cannot work at all and the switch stays unavailable
+
+    The four inputs are /api/status's own answers when it is the caller, so one poll
+    does not ask each question twice; every other caller passes nothing and they are
+    asked here.
     """
-    mk = P.makemkv_status()
-    share = db.default_share()
-    drives = P.optical_drives()
-    cap = _capacity(P.storage_status()["free_bytes"])
+    mk = P.makemkv_status() if mk is None else mk
+    share = db.default_share() if share is None else share
+    drives = P.optical_drives() if drives is None else drives
+    storage = P.storage_status() if storage is None else storage
+    cap = _capacity(storage["free_bytes"])
     warn_days = int(db.get("warn_key_days") or 7)
     checks = []
 
