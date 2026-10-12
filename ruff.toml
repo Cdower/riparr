@@ -4,6 +4,10 @@ target-version = "py39"
 extend-exclude = ["tools/preparer/payload"]
 
 [lint]
+# Named rather than left to ruff's default, which grew in 0.17 from these four groups to
+# over a thousand findings here. Widening it is a decision of its own, not a side
+# effect of bumping the version.
+select = ["E4", "E7", "E9", "F"]
 # House style, not mistakes: `if x: return y` on one line, several stdlib imports on
 # one line, `l` for a line, and imports below the `sys.path` line that makes them work.
 ignore = ["E401", "E402", "E701", "E702", "E741"]
