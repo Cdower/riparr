@@ -1848,7 +1848,9 @@ def _run_makemkv(job, s, title_index, out_dir, cancel_ev, total_bytes,
                 # the cost, and a line that arrives 20 ms after the last adds nothing.
                 # The first-byte check lives past this gate, so it still fires the first
                 # time the branch runs and finds a file, at most one interval late.
-                now = time.time()
+                # Monotonic, not wall time: the box has no RTC, and an NTP step backwards
+                # during a rip would otherwise mute progress for the length of the step.
+                now = time.monotonic()
                 if now - last_progress < PROGRESS_INTERVAL:
                     continue
                 last_progress = now

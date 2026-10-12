@@ -557,6 +557,12 @@ def apply():
         _profile_dir = os.environ.get("RIPARR_PROFILE_DIR") or None
         want_sampler = uploading or bool(_profile_dir)
 
+        # A sampler that is going away stops first, so its final flush still finds the
+        # uploader that was recording it -- the same order as stop(), for the same reason.
+        if _sampler is not None and not want_sampler:
+            _sampler.stop()
+            _sampler = None
+
         if _uploader is not None and (
                 not uploading or (_uploader.url, _uploader.user, _uploader.token)
                 != (url.rstrip("/"), user, token)):
@@ -566,9 +572,6 @@ def apply():
             _uploader = _new_uploader(url, user, token)
             _uploader.start()
 
-        if _sampler is not None and not want_sampler:
-            _sampler.stop()
-            _sampler = None
         if want_sampler and _sampler is None:
             _sampler = Sampler(on_window=_on_window)
             _sampler.start()

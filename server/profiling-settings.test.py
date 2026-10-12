@@ -57,5 +57,19 @@ else:
 check("saving a profiling_* key applies the module", applied, [1])
 check("the saved url comes back", out["profiling_url"], "https://x")
 
+# The other two doors (config import, backup restore) share system.restore_settings,
+# so the hook lives there too -- and only fires when a profiling_* key actually landed.
+from riparr import system as SY
+applied.clear()
+SY.restore_settings({"profiling_url": "https://y"})
+check("restoring a profiling_* key applies the module", applied, [1])
+check("and stored it", db.get("profiling_url"), "https://y")
+applied.clear()
+SY.restore_settings({"profiling_enabled": "yes"})
+check("a rejected profiling_* key does not apply", applied, [])
+other = next(k for k in db.DEFAULTS if not k.startswith("profiling_") and k != "log_files")
+SY.restore_settings({other: db.DEFAULTS[other]})
+check("an unrelated key does not apply", applied, [])
+
 print("\n%d failures" % len(failures) if failures else "\nall good")
 sys.exit(1 if failures else 0)
