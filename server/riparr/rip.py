@@ -1749,6 +1749,12 @@ def _identify(job, s):
 
 # ── stage 2: get it off the disc ──
 
+# MakeMKV writes a PRGV line many times a second, and each one used to cost a directory
+# listing plus an `UPDATE jobs` with a commit -- on a 1 GHz board that is also serving the
+# browser's polls. The interface polls once a second, so twice a second loses nothing
+# anyone can see. The final size is still written by the caller after the process exits.
+PROGRESS_INTERVAL = 0.5
+
 PRGV = re.compile(r"^PRGV:(\d+),(\d+),(\d+)")
 PRGC = re.compile(r'^PRGC:\d+,\d+,"(.*)"')
 MSG = re.compile(r'^MSG:(\d+),\d+,\d+,"(.*?)"')
@@ -1829,6 +1835,7 @@ def _run_makemkv(job, s, title_index, out_dir, cancel_ev, total_bytes,
                             text=True, bufsize=1)
     last_msg = ""
     first_byte_at = None
+    last_progress = 0.0
     try:
         for line in proc.stdout:
             if cancel_ev.is_set():
@@ -1837,6 +1844,14 @@ def _run_makemkv(job, s, title_index, out_dir, cancel_ev, total_bytes,
             line = line.strip()
             m = PRGV.match(line)
             if m:
+                # Most lines are skipped outright: the listing and the write below are
+                # the cost, and a line that arrives 20 ms after the last adds nothing.
+                # The first-byte check lives past this gate, so it still fires the first
+                # time the branch runs and finds a file, at most one interval late.
+                now = time.time()
+                if now - last_progress < PROGRESS_INTERVAL:
+                    continue
+                last_progress = now
                 # Progress comes from the file that is actually growing, not from
                 # MakeMKV's operation counter. Neither PRGV field can drive one
                 # continuous bar: field 1 restarts on every sub-operation (title sets,

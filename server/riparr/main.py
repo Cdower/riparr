@@ -7,11 +7,11 @@ import os
 import threading
 import time
 
-from fastapi import (FastAPI, File, HTTPException, Request, Response, Depends,
+from fastapi import (Body, FastAPI, File, HTTPException, Request, Response, Depends,
                      UploadFile)
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from pydantic import BaseModel
 from itsdangerous import URLSafeTimedSerializer, BadSignature
@@ -813,8 +813,9 @@ def get_settings(user=Depends(require_user)):
 
 
 @app.put("/api/settings")
-async def put_settings(request: Request, user=Depends(require_user)):
-    body = await request.json()
+def put_settings(body: Any = Body(...), user=Depends(require_user)):
+    # A plain `def`, so FastAPI runs it on the threadpool: the validation and the SQLite
+    # commits below used to block the event loop and stall every poll in flight.
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Expected an object")
     body.pop("session_secret", None)
@@ -1819,7 +1820,7 @@ def config_export(user=Depends(require_user)):
 
 
 @app.post("/api/config/import")
-async def config_import(request: Request, user=Depends(require_user)):
+def config_import(body: Any = Body(...), user=Depends(require_user)):
     """Restore settings *and* shares, and say plainly what could not be restored.
 
     This used to import settings, ignore the `shares` list it had itself exported, and
@@ -1832,7 +1833,6 @@ async def config_import(request: Request, user=Depends(require_user)):
     keeps the export file from being a credential for your NAS on top of everything else
     it already carries.
     """
-    body = await request.json()
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Expected an object")
 
@@ -1911,8 +1911,10 @@ def system_backups(user=Depends(require_user)):
 
 
 @app.post("/api/system/backups/upload")
-async def system_backup_upload(file: UploadFile = File(...), user=Depends(require_user)):
-    r = SY.import_backup(file.filename or "upload", await file.read())
+def system_backup_upload(file: UploadFile = File(...), user=Depends(require_user)):
+    # `def` for the same reason as put_settings: parsing and unpacking the zip is blocking
+    # work, and the threadpool is where FastAPI puts blocking work.
+    r = SY.import_backup(file.filename or "upload", file.file.read())
     if not r.get("ok"):
         raise HTTPException(status_code=400, detail=r.get("error", "Restore failed"))
     return r
