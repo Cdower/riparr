@@ -1529,10 +1529,6 @@ def wifi_connect(ssid, password):
 
 # ─────────────────────────────── makemkv ───────────────────────────────
 
-# Two seconds: long enough that /api/status and the Auto Rip checklist inside it share
-# one answer, short enough that a key saved or an install finished shows on the next
-# poll.
-@_ttl(2)
 def makemkv_status():
     """The one setting that needs periodic attention, so it is reported first-class."""
     if MOCK:
