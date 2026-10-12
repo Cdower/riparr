@@ -330,6 +330,14 @@ DEFAULTS = {
     "smtp_password": "",
     "smtp_from": "",
     "smtp_to": "",
+    # Performance profiling. Off unless somebody is helping find a performance problem;
+    # when on, riparr/profiling.py sends a CPU profile to the Grafana Cloud Profiles
+    # (Pyroscope) stack these three values name. Only function names and timings leave
+    # the box. The token is a secret, so main.SECRET_SETTINGS masks it like the others.
+    "profiling_enabled": False,
+    "profiling_url": "",
+    "profiling_user": "",
+    "profiling_token": "",
     "makemkv_key": "",
     # Resolved from whichever source answered, and only ever the expiry of the key this
     # box actually holds -- see makemkv._record_expiry. Durable, so the countdown keeps

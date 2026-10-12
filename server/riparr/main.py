@@ -19,7 +19,7 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature
 from . import (__version__, artwork as ART, backup as BK, db, drives as DRV, led as LED,
                music as MU,
                makemkv as MK,
-               notify as NT, platform as P, power as PWR, rip as RIP, shares as SH, system as SY,
+               notify as NT, platform as P, power as PWR, profiling as PROF, rip as RIP, shares as SH, system as SY,
                tv as TV, updater)
 
 STATIC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
@@ -101,6 +101,14 @@ def _startup():
     MU.start()
     LED.start()
     PWR.start()
+    PROF.start()
+
+
+@app.on_event("shutdown")
+def _shutdown():
+    # Stopping flushes the window in progress, so the last ten seconds before a restart
+    # are not the ones missing from the graph.
+    PROF.stop()
 
 
 # ─────────────────────────────── auth ───────────────────────────────
@@ -757,7 +765,7 @@ def autorip_set(body: AutoRip, user=Depends(require_user)):
 # back the same way when untouched, which is what makes "save" on a page you did not
 # retype your SMTP password into not wipe it. `list_shares` established the precedent
 # of never returning a stored password at all; these follow it.
-SECRET_SETTINGS = ("smtp_password", "ntfy_token")
+SECRET_SETTINGS = ("smtp_password", "ntfy_token", "profiling_token")
 SECRET_MASK = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
 
 
@@ -813,6 +821,13 @@ async def put_settings(request: Request, user=Depends(require_user)):
             "card": "kept on the SD card", "memory": "kept in memory until the next "
             "restart", "off": "off"}[SY.log_mode()])
 
+    # Like the log files, the profiler follows the setting the moment it is saved: a
+    # wrong URL should be found by the test button, not by waiting for a restart.
+    if any(k.startswith("profiling_") for k in body):
+        PROF.apply()
+        SY.component("Profiling").info(
+            "Profiling: %s", "sending to Grafana Cloud" if PROF.status()["uploading"] else "off")
+
     # Some settings stop meaning anything in direct mode -- see db.DIRECT_FORBIDS. The
     # response is the whole settings object, so a client that re-renders from it picks
     # the correction up for free; `adjusted` is there for one that wants to say why.
@@ -838,6 +853,19 @@ class NotifyTest(BaseModel):
 @app.post("/api/notifications/test")
 def notifications_test(body: NotifyTest, user=Depends(require_user)):
     r = NT.test(body.channel)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error"))
+    return r
+
+
+@app.get("/api/profiling")
+def profiling_status(user=Depends(require_user)):
+    return PROF.status()
+
+
+@app.post("/api/profiling/test")
+def profiling_test(user=Depends(require_user)):
+    r = PROF.test()
     if not r.get("ok"):
         raise HTTPException(status_code=400, detail=r.get("error"))
     return r

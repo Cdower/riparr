@@ -19,6 +19,7 @@ is exercisable on a laptop. `IS_APPLIANCE` is the only switch.
 | `riparr/main.py` | The API and static serving |
 | `riparr/platform.py` | **Everything that differs between the appliance and a Mac.** Nothing else shells out. |
 | `riparr/db.py` | SQLite. Settings are typed key/value; WAL, because the cable gets yanked (D4) |
+| `riparr/profiling.py` | The sampling profiler and its Pyroscope uploader |
 | `riparr/shares.py` | SMB discovery, and the write test that proves a share works |
 | `riparr/updater.py` | Update check and install against the official repository |
 | `static/` | The web UI |

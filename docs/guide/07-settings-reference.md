@@ -376,6 +376,7 @@ the password itself is never written down.
 | **Update** | Check now, and install. See [Updates](#updates) below |
 | **Logs** | Download a log bundle for bug reports |
 | **Log files** | Where `riparr.txt` and `riparr.debug.txt` are kept. **On the SD card** (default) survives restarts. **In memory** spares the card — the files are still there to download under System → Log Files, until the box restarts. **Off** writes nothing. Nothing but the Log Files page reads them, and the Events page records what the box does regardless. Takes effect when you save |
+| **Performance profiling** | Off by default. Sends a CPU profile to your own Grafana Cloud stack so somebody can see where the box spends its time. Set under Settings → General. See [Performance profiling](#performance-profiling) below |
 | **Restart / shut down** | In the account menu (the person icon, top right), not on a page. Rarely needed — the box is built to survive losing power, but shutting down here is the safe way to stop it before unplugging |
 
 ### Updates
@@ -400,6 +401,28 @@ checkbox next to the version number turns the checking off.
 > **Updating is always a nudge, never a surprise.** Nothing is downloaded and nothing is
 > replaced until you click. A box that quietly replaced its own software while you were
 > halfway through a disc would not be doing you a favour.
+
+### Performance profiling
+
+If the box feels slow and somebody is helping you find out why, it can send a **CPU
+profile** to a Grafana Cloud stack of yours. Every ten seconds it reports which of its own
+functions were using the processor, and for how long. That is all that leaves the box: no
+disc names, no file names, no settings, no passwords. It is off until you turn it on,
+nothing is installed, and nothing is written to the SD card.
+
+Under **Settings → General → Performance profiling** you need three values from Grafana
+Cloud:
+
+| Setting | Where to find it |
+|---|---|
+| **Profiles URL** | Your stack → Pyroscope → Details. The address that starts with `https://profiles-prod-` |
+| **Stack ID** | The number shown as *User* on that same page |
+| **Token** | An access policy token with the `profiles:write` scope, made under Security → Access Policies. Grafana shows it once, so paste it straight in. Riparr hides it again once saved |
+
+**Save and send a test profile** is how you know it works. It saves the page, sends one
+profile, and tells you whether Grafana accepted it. If it says *Sent*, the profile shows
+up in Grafana under Explore → Profiles within a minute or so. Switch the checkbox off and
+the box stops sending at once.
 
 ---
 

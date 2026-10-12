@@ -10,6 +10,13 @@ bother updating.
 
 ## Unreleased
 
+**A box can now stream a CPU profile to Grafana Cloud.** Settings → General has a new
+Performance profiling section: paste in the Profiles URL, stack ID and a token, press
+"Save and send a test profile", and the box sends which of its own functions are using
+the processor every ten seconds. It is off by default, sends no disc names or settings,
+installs nothing, and writes nothing to the card. It is for when somebody is helping you
+work out why a box feels slow.
+
 **Changing or removing the default share now actually moves the library mount.** The
 mount script treated "something is mounted at /srv/library" as "the right thing is
 mounted there", so after the default moved to another NAS every direct-mode rip kept
