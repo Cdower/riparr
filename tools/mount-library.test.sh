@@ -11,7 +11,7 @@
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/.." && pwd)
-T=$(mktemp -d -t riparr-mount-test)
+T=$(mktemp -d "${TMPDIR:-/tmp}/riparr-mount-test.XXXXXX")  # one form that both mktemps accept
 BIN="$T/bin"; mkdir -p "$BIN"
 STATE="$T/mounts"; : > "$STATE"           # one "target<TAB>source" line per mount
 MOUNT="$T/srv/library"

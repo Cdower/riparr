@@ -231,7 +231,7 @@ jobs:
       # was a 500 on every dashboard poll.
       - name: A backup restores everything it carried
         run: |
-          server/.venv/bin/pythonserver/backup-restore.test.py
+          server/.venv/bin/python server/backup-restore.test.py
 
       # Two cancels that were heard and then ignored: one during the identify scan,
       # overwritten by "queued" when the scan finished; one during a real upload,
@@ -264,7 +264,7 @@ jobs:
       # when it is an idle one, and nobody would know until they chased a ghost.
       - name: The profiler samples CPU time and uploads folded stacks
         run: |
-          server/.venv/bin/pythonserver/profiling.test.py
+          server/.venv/bin/python server/profiling.test.py
 
       # Profiling is configured from the Settings page, and the token is a credential.
       # This checks the defaults, that a value of the wrong type is refused, that
@@ -274,7 +274,7 @@ jobs:
       # user may screenshot for a forum, or leaves the profiler running on old settings.
       - name: Profiling settings save, mask the token and apply live
         run: |
-          server/.venv/bin/pythonserver/profiling-settings.test.py
+          server/.venv/bin/python server/profiling-settings.test.py
 
       # /api/status is polled about once a second during a rip by every open dashboard, and the optimisations
       # behind it are caches. A cache that is not invalidated shows something stale: a
@@ -284,7 +284,7 @@ jobs:
       # the drives once and still returns every key the browser expects.
       - name: The status caches expire and invalidate correctly
         run: |
-          server/.venv/bin/pythonserver/status-cache.test.py
+          server/.venv/bin/python server/status-cache.test.py
 
       # MakeMKV prints a progress line many times a second, and each one used to be a
       # directory listing, an UPDATE and a commit. Now
@@ -295,7 +295,7 @@ jobs:
       # stalls every poll in flight.
       - name: Rip progress is throttled without losing the last value
         run: |
-          server/.venv/bin/pythonserver/progress-throttle.test.py
+          server/.venv/bin/python server/progress-throttle.test.py
 
       # The benchmark is what the speed-up claims are measured with, so a benchmark that
       # quietly prints nothing useful would make them worthless. This starts a real
@@ -305,7 +305,7 @@ jobs:
       # port.
       - name: The benchmark runs and reports what it promises
         run: |
-          server/.venv/bin/pythonserver/bench.test.py
+          server/.venv/bin/python server/bench.test.py
 
       # The card write's data-in, data-out pieces: sector arithmetic, device names,
       # partition classification -- and since Raspberry Pi OS Trixie dropped custom.toml,
