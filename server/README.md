@@ -19,6 +19,7 @@ is exercisable on a laptop. `IS_APPLIANCE` is the only switch.
 | `riparr/main.py` | The API and static serving |
 | `riparr/platform.py` | **Everything that differs between the appliance and a Mac.** Nothing else shells out. |
 | `riparr/db.py` | SQLite. Settings are typed key/value; WAL, because the cable gets yanked (D4) |
+| `riparr/profiling.py` | The sampling profiler and its Pyroscope uploader |
 | `riparr/shares.py` | SMB discovery, and the write test that proves a share works |
 | `riparr/updater.py` | Update check and install against the official repository |
 | `static/` | The web UI |
@@ -75,6 +76,33 @@ brew install libcdio libcdio-paranoia flac lame opus-tools vorbis-tools ffmpeg
 | `oggenc` | `vorbis-tools` |
 | `ffmpeg`, `ffprobe` | `ffmpeg` |
 | `bsdtar` | ships with macOS |
+
+The others need the service's own dependencies (`uv run` has them), and CI runs them
+all:
+
+- `profiling.test.py`: the sampler weights stacks by CPU time and uploads folded text.
+- `profiling-settings.test.py`: the profiling settings save, mask the token and apply live.
+- `status-cache.test.py`: each cache behind `/api/status` expires and invalidates.
+- `progress-throttle.test.py`: MakeMKV progress is written at most twice a second, and three handlers run off the event loop.
+- `bench.test.py`: the benchmark starts a real server and reports every figure it promises.
+
+`bench.py` is not a test but lives beside them. It starts the service in mock mode on a
+throwaway database, signs in, and drives the mix the browser polls (the queue, the status
+and the autorip state each cycle, the power page every third). It reports each endpoint's
+p50, p95 and worst latency, the process's CPU seconds idle and per cycle under load, and
+the hottest frames from the profiler's local dump. On macOS that profile counts wall
+time, so read its shape rather than its percentages. `--json PATH` saves the numbers and
+`--keep DIR` keeps the `.folded` files, which load in speedscope.app as "collapsed
+stacks". `--no-profile` runs the service with the profiler off and skips the profile
+tables, so two runs, with and without it, show what the sampler itself costs. Run it
+before and after a change that is meant to make the service cheaper:
+
+```sh
+uv run --locked python bench.py
+uv run --locked python bench.py --url http://riparr.local:9797 --user U --password P
+```
+
+The second form skips the idle and profile parts and measures a real box over the network.
 
 The data-CD case builds its ISO with `xorriso` when there is one and falls back to
 macOS's own `hdiutil`, so `xorriso` is optional here. CI installs the Debian equivalents;

@@ -430,6 +430,15 @@ def restore_settings(settings):
         MK.apply_key(settings["makemkv_key"])
         MK.record_expiry_for(settings["makemkv_key"])
     db.reconcile(settings)
+    # The settings that drive a running thread follow the value the moment it lands,
+    # whichever door it came through -- a restore used to leave the profiler uploading
+    # with the old credentials, and the logs in the old place, until the next restart.
+    # main.put_settings does the same for its door.
+    if "log_files" in settings and "log_files" not in rejected:
+        apply_log_setting()
+    if any(k.startswith("profiling_") and k not in rejected for k in settings):
+        from . import profiling as PROF  # imports system; so not at module level
+        PROF.apply()
     return n, rejected
 
 

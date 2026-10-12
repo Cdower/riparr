@@ -2949,6 +2949,24 @@ settingsPages.general = async (s) => {
           when you save, no restart needed.</span></label>
     </div></div>
 
+    <div class="section"><h2>Performance profiling</h2><div>
+      ${sw("profiling_enabled", "Send a CPU profile to Grafana Cloud", s.profiling_enabled,
+          "Every ten seconds the box sends which of its own functions were using the processor, and for how long, to your Grafana Cloud stack's Profiles service. Nothing else goes: no disc names, no file names, no settings. Off unless you are helping find a performance problem.")}
+      <label class="f"><span>Profiles URL</span>
+        <input data-set="profiling_url" value="${esc(s.profiling_url || "")}" placeholder="https://profiles-prod-001.grafana.net">
+        <span class="help">In Grafana Cloud: your stack → Pyroscope → Details. The URL that
+          starts with <code>https://profiles-prod-</code>.</span></label>
+      <label class="f"><span>Stack ID</span>
+        <input data-set="profiling_user" value="${esc(s.profiling_user || "")}" placeholder="123456" inputmode="numeric">
+        <span class="help">The number shown as <i>User</i> on the same page.</span></label>
+      <label class="f"><span>Token</span>
+        <input data-set="profiling_token" type="password" value="${esc(s.profiling_token || "")}" autocomplete="off">
+        <span class="help">An access policy token with the <code>profiles:write</code> scope.
+          Make one under Security → Access Policies; it is shown once.</span></label>
+      <div class="btn-row"><button class="btn" data-test-profiling>Save and send a test profile</button>
+        <span class="test-out" id="test-profiling"></span></div>
+    </div></div>
+
     <div class="section"><h2>Updates</h2><div>
       ${sw("auto_check_updates", "Check for updates automatically", s.auto_check_updates,
           "Checks the official repository once a day. Nothing installs without you asking.")}
@@ -3828,6 +3846,25 @@ function wireContent(section, sub) {
     }
     b.disabled = false;
   });
+
+  const tp = $("[data-test-profiling]");
+  if (tp) tp.onclick = async () => {
+    const out = $("#test-profiling");
+    tp.disabled = true;
+    out.className = "test-out";
+    out.textContent = "Saving…";
+    try {
+      await api.put("/api/settings", collectSettings());
+      out.textContent = "Sending…";
+      await api.post("/api/profiling/test", {});
+      out.className = "test-out ok";
+      out.textContent = "Sent — check Grafana in a minute";
+    } catch (e) {
+      out.className = "test-out bad";
+      out.textContent = e.message;
+    }
+    tp.disabled = false;
+  };
 
   /* Repair is slow (systemd oneshot, then a poll until the files appear), so the
      button says what it is doing rather than just disabling. A 45-second silence on a

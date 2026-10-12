@@ -7,11 +7,11 @@ import os
 import threading
 import time
 
-from fastapi import (FastAPI, File, HTTPException, Request, Response, Depends,
+from fastapi import (Body, FastAPI, File, HTTPException, Request, Response, Depends,
                      UploadFile)
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from pydantic import BaseModel
 from itsdangerous import URLSafeTimedSerializer, BadSignature
@@ -19,7 +19,7 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature
 from . import (__version__, artwork as ART, backup as BK, db, drives as DRV, led as LED,
                music as MU,
                makemkv as MK,
-               notify as NT, platform as P, power as PWR, rip as RIP, shares as SH, system as SY,
+               notify as NT, platform as P, power as PWR, profiling as PROF, rip as RIP, shares as SH, system as SY,
                tv as TV, updater)
 
 STATIC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
@@ -37,10 +37,20 @@ app = FastAPI(title="Riparr", version=__version__, docs_url=_DOCS,
               openapi_url=_OPENAPI)
 
 
+# The signing secret, read once. Every authenticated request verifies its cookie with it,
+# and the only thing that ever changes it is `_rotate_secret`, which replaces this too:
+# PUT /api/settings and both restore doors refuse to write `session_secret` at all.
+_SECRET = None
+
+
 def _secret():
+    global _SECRET
+    if _SECRET:
+        return _SECRET
     s = db.get("session_secret")
     if not s:
         s = db.set("session_secret", os.urandom(32).hex())
+    _SECRET = s
     return s
 
 
@@ -49,7 +59,9 @@ def _rotate_secret():
     one. This is how a password change logs out other devices: the sessions are
     stateless (nothing to delete), so revocation is done by changing the key they were
     signed under."""
-    return db.set("session_secret", os.urandom(32).hex())
+    global _SECRET
+    _SECRET = db.set("session_secret", os.urandom(32).hex())
+    return _SECRET
 
 
 # ─────────────────────────────── password recovery ───────────────────────────────
@@ -101,6 +113,14 @@ def _startup():
     MU.start()
     LED.start()
     PWR.start()
+    PROF.start()
+
+
+@app.on_event("shutdown")
+def _shutdown():
+    # Stopping flushes the window in progress, so the last ten seconds before a restart
+    # are not the ones missing from the graph.
+    PROF.stop()
 
 
 # ─────────────────────────────── auth ───────────────────────────────
@@ -362,6 +382,13 @@ def _capacity(free_bytes, direct=None):
 
 @app.get("/api/status")
 def status(user=Depends(require_user)):
+    # Each fact is asked for once and handed to everything that needs it. This poll
+    # runs every 1.2 s during a rip, and it used to enumerate the drives three times
+    # (here, in the diagnosis and in the Auto Rip checklist) and ask MakeMKV, the
+    # default share and the card twice each.
+    drives = P.optical_drives()
+    mk = P.makemkv_status()
+    share = db.default_share()
     storage = P.storage_status()
     # The user should never see a gigabyte: capacity is expressed in discs and mode.
     return {
@@ -369,17 +396,17 @@ def status(user=Depends(require_user)):
         "hostname": P.hostname(),
         "system": P.system_status(),
         "storage": dict(storage, **_capacity(storage["free_bytes"])),
-        "optical": P.optical_diagnosis(),
+        "optical": P.optical_diagnosis(drives=drives),
         "clock": P.clock_status(),
         "wifi": P.wifi_status(),
-        "makemkv": P.makemkv_status(),
-        "drives": _drive_report(),
+        "makemkv": mk,
+        "drives": _drive_report(drives=drives),
         # Four fields, not the row. The row carries the SMB password, and the browser
         # has never needed it -- same argument as /api/setup/state, which was handing
         # it out to anyone at all.
-        "share": _share_out(db.default_share()),
+        "share": _share_out(share),
         "setup_complete": bool(db.get("setup_complete")),
-        "autorip": _autorip_state(),
+        "autorip": _autorip_state(mk=mk, share=share, drives=drives, storage=storage),
         # A refused duplicate leaves no job and no file, so this is the only trace of
         # it. The page turns it into "you already ripped this, here it is".
         "duplicate": RIP.pending_duplicate(),
@@ -539,16 +566,17 @@ def _reads_phrase(drive):
     return ", ".join(parts)
 
 
-def _drive_report():
+def _drive_report(drives=None):
     """The drives, plus the two things that are too expensive for the disc watcher.
 
     `optical_drives()` runs every three seconds and stays cheap. LibreDrive costs a
     `makemkvcon` run and the UHD label is derived from it, so both are attached here,
-    on the status request a human made.
+    on the status request a human made. `drives` is the caller's own answer when it
+    has one, so /api/status enumerates them once.
     """
     out = []
     busy = db.active_job() is not None
-    for d in P.optical_drives():
+    for d in (P.optical_drives() if drives is None else drives):
         d = dict(d)
         # Ask MakeMKV about LibreDrive only when it cannot get in the way. The probe is
         # a two-minute `makemkvcon` run that holds the drive, and rip.py:136 already
@@ -613,7 +641,7 @@ def _space_warning(drive):
             % (size // 2 ** 30, free // 2 ** 30))
 
 
-def _autorip_state():
+def _autorip_state(mk=None, share=None, drives=None, storage=None):
     """Auto Rip's prerequisites, every one of them, whether or not it is met.
 
     This used to return only the things that were wrong. That is the right shape for
@@ -628,11 +656,16 @@ def _autorip_state():
       warn  Auto Rip still runs, but a disc put in right now may not get ripped --
             the card is full, or the key dies this week
       fail  Auto Rip cannot work at all and the switch stays unavailable
+
+    The four inputs are /api/status's own answers when it is the caller, so one poll
+    does not ask each question twice; every other caller passes nothing and they are
+    asked here.
     """
-    mk = P.makemkv_status()
-    share = db.default_share()
-    drives = P.optical_drives()
-    cap = _capacity(P.storage_status()["free_bytes"])
+    mk = P.makemkv_status() if mk is None else mk
+    share = db.default_share() if share is None else share
+    drives = P.optical_drives() if drives is None else drives
+    storage = P.storage_status() if storage is None else storage
+    cap = _capacity(storage["free_bytes"])
     warn_days = int(db.get("warn_key_days") or 7)
     checks = []
 
@@ -757,7 +790,7 @@ def autorip_set(body: AutoRip, user=Depends(require_user)):
 # back the same way when untouched, which is what makes "save" on a page you did not
 # retype your SMTP password into not wipe it. `list_shares` established the precedent
 # of never returning a stored password at all; these follow it.
-SECRET_SETTINGS = ("smtp_password", "ntfy_token")
+SECRET_SETTINGS = ("smtp_password", "ntfy_token", "profiling_token")
 SECRET_MASK = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
 
 
@@ -779,9 +812,29 @@ def get_settings(user=Depends(require_user)):
     return _redact(db.all_settings())
 
 
+def _json_body(body):
+    """The parsed body, whatever Content-Type it came with.
+
+    `Body(...)` parses JSON only when the request says it is JSON; anything else arrives
+    as the raw bytes. These handlers used to call `await request.json()`, which parsed
+    regardless, so a `curl -d '{...}'` with no header worked, and an API-first service
+    should not start refusing it. Bytes that are not JSON come back as None, which the
+    caller's "Expected an object" check turns into the same 400 as before.
+    """
+    if isinstance(body, (bytes, bytearray)):
+        try:
+            return json.loads(body)
+        except ValueError:
+            # JSONDecodeError and UnicodeDecodeError are both ValueErrors.
+            return None
+    return body
+
+
 @app.put("/api/settings")
-async def put_settings(request: Request, user=Depends(require_user)):
-    body = await request.json()
+def put_settings(body: Any = Body(...), user=Depends(require_user)):
+    # A plain `def`, so FastAPI runs it on the threadpool: the validation and the SQLite
+    # commits below used to block the event loop and stall every poll in flight.
+    body = _json_body(body)
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Expected an object")
     body.pop("session_secret", None)
@@ -813,6 +866,13 @@ async def put_settings(request: Request, user=Depends(require_user)):
             "card": "kept on the SD card", "memory": "kept in memory until the next "
             "restart", "off": "off"}[SY.log_mode()])
 
+    # Like the log files, the profiler follows the setting the moment it is saved: a
+    # wrong URL should be found by the test button, not by waiting for a restart.
+    if any(k.startswith("profiling_") for k in body):
+        PROF.apply()
+        SY.component("Profiling").info(
+            "Profiling: %s", "sending to Grafana Cloud" if PROF.status()["uploading"] else "off")
+
     # Some settings stop meaning anything in direct mode -- see db.DIRECT_FORBIDS. The
     # response is the whole settings object, so a client that re-renders from it picks
     # the correction up for free; `adjusted` is there for one that wants to say why.
@@ -838,6 +898,19 @@ class NotifyTest(BaseModel):
 @app.post("/api/notifications/test")
 def notifications_test(body: NotifyTest, user=Depends(require_user)):
     r = NT.test(body.channel)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error"))
+    return r
+
+
+@app.get("/api/profiling")
+def profiling_status(user=Depends(require_user)):
+    return PROF.status()
+
+
+@app.post("/api/profiling/test")
+def profiling_test(user=Depends(require_user)):
+    r = PROF.test()
     if not r.get("ok"):
         raise HTTPException(status_code=400, detail=r.get("error"))
     return r
@@ -1766,7 +1839,7 @@ def config_export(user=Depends(require_user)):
 
 
 @app.post("/api/config/import")
-async def config_import(request: Request, user=Depends(require_user)):
+def config_import(body: Any = Body(...), user=Depends(require_user)):
     """Restore settings *and* shares, and say plainly what could not be restored.
 
     This used to import settings, ignore the `shares` list it had itself exported, and
@@ -1779,7 +1852,7 @@ async def config_import(request: Request, user=Depends(require_user)):
     keeps the export file from being a credential for your NAS on top of everything else
     it already carries.
     """
-    body = await request.json()
+    body = _json_body(body)
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Expected an object")
 
@@ -1858,8 +1931,10 @@ def system_backups(user=Depends(require_user)):
 
 
 @app.post("/api/system/backups/upload")
-async def system_backup_upload(file: UploadFile = File(...), user=Depends(require_user)):
-    r = SY.import_backup(file.filename or "upload", await file.read())
+def system_backup_upload(file: UploadFile = File(...), user=Depends(require_user)):
+    # `def` for the same reason as put_settings: parsing and unpacking the zip is blocking
+    # work, and the threadpool is where FastAPI puts blocking work.
+    r = SY.import_backup(file.filename or "upload", file.file.read())
     if not r.get("ok"):
         raise HTTPException(status_code=400, detail=r.get("error", "Restore failed"))
     return r

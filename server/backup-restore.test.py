@@ -26,7 +26,6 @@ _tmp = tempfile.mkdtemp(prefix="riparr-backup-restore-test-")
 os.environ["RIPARR_DB"] = os.path.join(_tmp, "test.db")
 os.environ["RIPARR_APPLIANCE"] = "0"
 
-import asyncio  # noqa: E402
 
 from fastapi import HTTPException  # noqa: E402
 
@@ -109,17 +108,9 @@ check("and says so", r.get("rejected"), {"warn_key_days": db.check_setting("warn
 
 
 
-class FakeRequest:
-    def __init__(self, body):
-        self._body = body
-
-    async def json(self):
-        return self._body
-
-
 def put_settings(body):
     try:
-        asyncio.run(MAIN.put_settings(FakeRequest(body), user=None))
+        MAIN.put_settings(body, user=None)
         return 200, ""
     except HTTPException as e:
         return e.status_code, e.detail

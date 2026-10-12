@@ -4,6 +4,8 @@ SQLite state. One file, one connection pool, no separate database process (D2).
 Settings are a typed key/value table rather than columns, because the settings surface
 will keep growing and an appliance cannot afford a migration story that involves a DBA.
 """
+import copy
+import functools
 import json
 import os
 import sqlite3
@@ -330,6 +332,14 @@ DEFAULTS = {
     "smtp_password": "",
     "smtp_from": "",
     "smtp_to": "",
+    # Performance profiling. Off unless somebody is helping find a performance problem;
+    # when on, riparr/profiling.py sends a CPU profile to the Grafana Cloud Profiles
+    # (Pyroscope) stack these three values name. Only function names and timings leave
+    # the box. The token is a secret, so main.SECRET_SETTINGS masks it like the others.
+    "profiling_enabled": False,
+    "profiling_url": "",
+    "profiling_user": "",
+    "profiling_token": "",
     "makemkv_key": "",
     # Resolved from whichever source answered, and only ever the expiry of the key this
     # box actually holds -- see makemkv._record_expiry. Durable, so the countdown keeps
@@ -481,6 +491,10 @@ def conn():
 
 
 def init():
+    # Tests re-init against a fresh path; nothing remembered from the old file applies.
+    settings_changed()
+    _users_changed()
+    _typical_changed()
     c = conn()
     c.executescript(SCHEMA)
     for table, cols in ADDED_COLUMNS.items():
@@ -492,19 +506,63 @@ def init():
     _ensure_default_share()
 
 
+# Settings, as their stored JSON text, keyed by name; None means "no row". `get` used to
+# be a SELECT every time, and one /api/status poll makes a dozen of them. The cache is
+# process-wide although `conn()` is per-thread, which is correct because every write to
+# the table in this process goes through `set()` (which evicts the entry) or is followed
+# by `settings_changed()` (which empties it). The text is kept rather than the decoded
+# value so each caller gets its own copy: a caller that appends to a list it was handed
+# must not change what the next caller reads.
+#
+# `_settings_gen` counts writes. A reader that missed only files its answer if no write
+# happened while it was reading; otherwise a SELECT that started before a `set()` on
+# another thread could finish after it and pin the old value for good.
+_settings = {}
+_settings_gen = 0
+_settings_lock = threading.Lock()
+
+
+def settings_changed():
+    """Forget every cached setting. Call this after writing the table without `set()`."""
+    global _settings_gen
+    with _settings_lock:
+        _settings.clear()
+        _settings_gen += 1
+
+
 def get(key, default=None):
-    row = conn().execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-    if row is None:
+    with _settings_lock:
+        known = key in _settings
+        raw = _settings.get(key)
+        gen = _settings_gen
+    if not known:
+        row = conn().execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        raw = row["value"] if row is not None else None
+        with _settings_lock:
+            if gen == _settings_gen:
+                _settings[key] = raw
+    if raw is None:
         return DEFAULTS.get(key, default)
-    return json.loads(row["value"])
+    return json.loads(raw)
 
 
 def set(key, value):
+    """Store a setting and return the value, which `main._secret` relies on."""
+    global _settings_gen
+    raw = json.dumps(value)
     c = conn()
     c.execute("INSERT INTO settings(key,value) VALUES(?,?) "
               "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-              (key, json.dumps(value)))
+              (key, raw))
     c.commit()
+    # Evict rather than fill. Two set()s of one key on different threads can commit in
+    # one order and reach this lock in the other, and filling here would then leave the
+    # loser's value cached over the winner's row until the next write. Dropping the
+    # entry makes the next get() read whatever was committed last; the generation bump
+    # stops a get() that was already mid-SELECT from filing the old row.
+    with _settings_lock:
+        _settings.pop(key, None)
+        _settings_gen += 1
     return value
 
 
@@ -523,6 +581,7 @@ def create_user(username, password):
     c.execute("INSERT INTO users(username,password_hash,created_at) VALUES(?,?,?)",
               (username, pbkdf2_sha256.hash(password), int(time.time())))
     c.commit()
+    _users_changed()
 
 
 # A real pbkdf2 hash of nothing in particular, used only to burn the same time a genuine
@@ -553,6 +612,24 @@ def verify_user(username, password):
         return False
 
 
+# has_users() runs on every authenticated request (require_user). The answer can only go
+# from False to True by create_user and back by clear_users, so a True is remembered until
+# a write to the users table resets it. A False is never remembered: first-run setup can
+# add the account at any moment, from any thread. The generation count does for this
+# what `_settings_gen` does for settings: a COUNT(*) that raced a DELETE does not get to
+# file its stale True.
+_has_users = False
+_users_gen = 0
+_users_lock = threading.Lock()
+
+
+def _users_changed():
+    global _has_users, _users_gen
+    with _users_lock:
+        _has_users = False
+        _users_gen += 1
+
+
 def clear_users():
     """Remove every account, so first-run setup offers to create one again.
 
@@ -563,10 +640,20 @@ def clear_users():
     c = conn()
     c.execute("DELETE FROM users")
     c.commit()
+    _users_changed()
 
 
 def has_users():
-    return conn().execute("SELECT COUNT(*) n FROM users").fetchone()["n"] > 0
+    global _has_users
+    with _users_lock:
+        if _has_users:
+            return True
+        gen = _users_gen
+    found = conn().execute("SELECT COUNT(*) n FROM users").fetchone()["n"] > 0
+    with _users_lock:
+        if gen == _users_gen:
+            _has_users = found
+    return found
 
 
 def set_password(username, password):
@@ -575,6 +662,7 @@ def set_password(username, password):
     c.execute("UPDATE users SET password_hash=? WHERE username=?",
               (pbkdf2_sha256.hash(password), username))
     c.commit()
+    _users_changed()              # cannot change the count, but every write resets it
 
 
 # ── shares ──
@@ -939,6 +1027,8 @@ def update_job(job_id, **fields):
     c.execute("UPDATE jobs SET %s WHERE id=?" % ",".join("%s=?" % k for k in keys),
               [fields[k] for k in keys] + [job_id])
     c.commit()
+    if "state" in fields:
+        _typical_changed()        # a job finishing is the one write the medians wait on
 
 
 def next_queued_job():
@@ -1009,6 +1099,43 @@ def get_disc(fingerprint):
     return dict(row) if row else None
 
 
+# The medians below are recomputed from up to twenty past rips, and /api/queue asks for
+# both on every 1.2 s poll. They are remembered for thirty seconds per argument tuple,
+# and forgotten whenever update_job changes a job's state: a median over past rips that
+# moves thirty seconds late is invisible, and a job finishing clears it anyway.
+TYPICAL_TTL = 30
+_typical = {}
+_typical_gen = 0
+_typical_lock = threading.Lock()
+
+
+def _typical_changed():
+    global _typical_gen
+    with _typical_lock:
+        _typical.clear()
+        _typical_gen += 1
+
+
+def _remember_typical(fn):
+    @functools.wraps(fn)
+    def cached(*args, **kwargs):
+        key = (fn.__name__, args, tuple(sorted(kwargs.items())))
+        now = time.monotonic()
+        with _typical_lock:
+            hit = _typical.get(key)
+            gen = _typical_gen
+        if hit is None or now >= hit[0]:
+            hit = (now + TYPICAL_TTL, fn(*args, **kwargs))
+            with _typical_lock:
+                if gen == _typical_gen:       # a job changed state mid-query: don't file it
+                    _typical[key] = hit
+        # A copy, because /api/history builds its response out of these dicts and the
+        # next caller must not see anything done to them.
+        return copy.deepcopy(hit[1])
+    return cached
+
+
+@_remember_typical
 def typical_job_seconds(kind=None, minimum=2):
     """How long a rip usually takes on this box, from this box's own history.
 
@@ -1153,6 +1280,7 @@ def job_stages(job):
            [v for k, v in totals.items() if k not in STAGE_ORDER]
 
 
+@_remember_typical
 def typical_stage_seconds(kind=None, minimum=2, limit=20):
     """Median seconds per stage over this box's own successful rips.
 
