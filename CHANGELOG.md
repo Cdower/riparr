@@ -17,6 +17,20 @@ the processor every ten seconds. It is off by default, sends no disc names or se
 installs nothing, and writes nothing to the card. It is for when somebody is helping you
 work out why a box feels slow.
 
+**The dashboard does less work every time it refreshes.** The page asks the box for its
+status every second, and each answer used to cost 19 database queries, three scans of the
+drives, two `iw` calls for the WiFi and up to two `timedatectl` calls for the clock. It
+now costs 8 queries and one scan, and the WiFi answer is remembered for 3 seconds and the
+clock's for 30, so most refreshes start no program at all. The status light shares that
+WiFi answer instead of asking for it again every second. Signed-in requests no longer
+count the users and re-read the session secret each time, and the queue stops recalculating
+its typical rip times on every refresh. During a rip, MakeMKV's progress was written to
+the database on every line it printed, many times a second; it is now written at most
+twice a second. Saving settings, importing a config and uploading a backup no longer
+freeze every open page while they work. On a desktop the saving is small, because nothing
+there starts a program. On the box each avoided `iw` or `timedatectl` is tens of
+milliseconds of a 1 GHz processor, which is where you should notice it.
+
 **Changing or removing the default share now actually moves the library mount.** The
 mount script treated "something is mounted at /srv/library" as "the right thing is
 mounted there", so after the default moved to another NAS every direct-mode rip kept

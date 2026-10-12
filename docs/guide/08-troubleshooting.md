@@ -173,6 +173,32 @@ Genuinely slower than that:
 
 No SD card and no drive will make this faster. There's no Ethernet option on this board.
 
+## Profiles are not arriving in Grafana
+
+This only applies if you turned on Performance profiling in Settings → General. The
+quickest check is that section's **Save and send a test profile** button: it sends one
+profile right now and tells you what came back.
+
+The same failure is on the Events page, from the "Profiling" component, as a line like:
+
+```
+Profile upload failed: HTTP 401 ...
+```
+
+What the end of that line means:
+
+- **HTTP 401.** Grafana did not accept the credentials. Either the token is wrong or
+  expired, or the stack ID is not the one the token belongs to. Paste both again.
+- **HTTP 404.** The URL is wrong. It should be the `https://profiles-prod-…grafana.net`
+  address from your stack's Profiles page, and nothing after `.net`: no path, no
+  `/ingest`.
+- **A URLError, such as "Name or service not known" or "timed out".** The box cannot
+  reach the internet. Check the WiFi and the date on the box, then try the test button
+  again.
+
+The profiler never stops the box doing its job. A failed upload drops the oldest
+profile after six are waiting, and nothing is written to the card.
+
 ## Names are wrong
 
 - **Check the disc's queue entry** — Riparr flags anything it was unsure about rather than

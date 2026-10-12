@@ -235,6 +235,70 @@ jobs:
             flac lame opus-tools vorbis-tools libarchive-tools xorriso ffmpeg >/dev/null
           python server/music-pipeline.test.py
 
+      # The tests below import the service itself, and the runner's Python has no fastapi.
+      # The steps above never needed it: they exercise pipeline modules that import only
+      # the standard library. Without this the next five fail on `import fastapi` before
+      # they test anything, which reads as five regressions and is one missing install.
+      # The versions are the ones the box runs, from the same lock file.
+      - name: The service's dependencies, for the tests that import it
+        run: |
+          python -m venv /tmp/venv-tests
+          /tmp/venv-tests/bin/pip install -q -r server/requirements.txt
+
+      # The sampling profiler, against a local Pyroscope stand-in. It checks the folded
+      # format the ingest endpoint parses, the basic-auth header, that a stack is weighted
+      # by CPU time and not wall time, that a window closes on schedule and survives the
+      # clock stepping backwards, and that a failed upload never carries the token in its
+      # error. This is the only place the Linux branch runs: it asserts that
+      # `pthread_getcpuclockid` works and that the profiler reports `cpu` mode, and on
+      # the macOS development machine the same code falls back to wall time. Break the
+      # per-thread clock and a box would send profiles that look like a busy service
+      # when it is an idle one, and nobody would know until they chased a ghost.
+      - name: The profiler samples CPU time and uploads folded stacks
+        run: |
+          /tmp/venv-tests/bin/python server/profiling.test.py
+
+      # Profiling is configured from the Settings page, and the token is a credential.
+      # This checks the defaults, that a value of the wrong type is refused, that
+      # /api/settings masks the token, that the test button turns a failed upload into a
+      # 400 carrying the reason, and that saving a profiling setting reaches the profiler
+      # with no restart. A regression here either leaks a Grafana token into a page the
+      # user may screenshot for a forum, or leaves the profiler running on old settings.
+      - name: Profiling settings save, mask the token and apply live
+        run: |
+          /tmp/venv-tests/bin/python server/profiling-settings.test.py
+
+      # /api/status is polled every second by every open dashboard, and the optimisations
+      # behind it are caches. A cache that is not invalidated shows something stale: a
+      # setting that reverts after a save, a user count that stays at zero after the
+      # first account, queue medians that ignore a job that just finished. This pins each
+      # cache to the writes that must clear it, and checks that one status request reads
+      # the drives once and still returns every key the browser expects.
+      - name: The status caches expire and invalidate correctly
+        run: |
+          /tmp/venv-tests/bin/python server/status-cache.test.py
+
+      # MakeMKV prints a progress line many times a second, and each one used to be a
+      # directory listing, an UPDATE and a commit on a 1 GHz board with an SD card. Now
+      # it is written at most twice a second. Without this check a change that drops the
+      # throttle brings back sixty writes for sixty lines, and nothing else would notice,
+      # because the rip still finishes. It also checks that settings save, config import
+      # and backup upload run on the threadpool, because on the event loop each one
+      # stalls every poll in flight.
+      - name: Rip progress is throttled without losing the last value
+        run: |
+          /tmp/venv-tests/bin/python server/progress-throttle.test.py
+
+      # The benchmark is what the speed-up claims are measured with, so a benchmark that
+      # quietly prints nothing useful would make them worthless. This starts a real
+      # uvicorn in mock mode, runs six cycles and checks the report has the status row,
+      # the idle and profile sections, the CPU figure and the saved stacks. It takes
+      # about thirty seconds, most of it the server starting, and it is the one step here
+      # that needs a free port.
+      - name: The benchmark runs and reports what it promises
+        run: |
+          /tmp/venv-tests/bin/python server/bench.test.py
+
       # The card write's data-in, data-out pieces: sector arithmetic, device names,
       # partition classification -- and since Raspberry Pi OS Trixie dropped custom.toml,
       # the cloud-init seed files a Pi card boots from. Wrong seed files boot a stock image

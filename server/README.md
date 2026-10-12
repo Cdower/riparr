@@ -77,6 +77,15 @@ brew install libcdio libcdio-paranoia flac lame opus-tools vorbis-tools ffmpeg
 | `ffmpeg`, `ffprobe` | `ffmpeg` |
 | `bsdtar` | ships with macOS |
 
+The others need the service's own dependencies (`uv run` has them), and CI runs them
+all:
+
+- `profiling.test.py`: the sampler weights stacks by CPU time and uploads folded text.
+- `profiling-settings.test.py`: the profiling settings save, mask the token and apply live.
+- `status-cache.test.py`: each cache behind `/api/status` expires and invalidates.
+- `progress-throttle.test.py`: MakeMKV progress is written at most twice a second, and three handlers run off the event loop.
+- `bench.test.py`: the benchmark starts a real server and reports every figure it promises.
+
 `bench.py` is not a test but lives beside them. It starts the service in mock mode on a
 throwaway database, signs in, and drives the mix the browser polls (the queue, the status
 and the autorip state each cycle, the power page every third). It reports each endpoint's
