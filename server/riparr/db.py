@@ -883,11 +883,19 @@ def drive_busy():
     return dict(row) if row else None
 
 
-def next_sending_job():
-    """The oldest job waiting to be pushed to the library, for the sender thread."""
-    row = conn().execute(
-        "SELECT * FROM jobs WHERE state='transferring' AND local_path IS NOT NULL "
-        "AND bytes_sent=0 ORDER BY id LIMIT 1").fetchone()
+def next_sending_job(exclude=()):
+    """The oldest job waiting to be pushed to the library, for the sender thread.
+
+    `exclude` is the jobs the sender is deliberately leaving alone for the moment --
+    the ones whose share isn't answering -- so that one of those does not stop every
+    job behind it.
+    """
+    ids = [int(i) for i in exclude]
+    sql = ("SELECT * FROM jobs WHERE state='transferring' AND local_path IS NOT NULL "
+           "AND bytes_sent=0")
+    if ids:
+        sql += " AND id NOT IN (%s)" % ",".join("?" * len(ids))
+    row = conn().execute(sql + " ORDER BY id LIMIT 1", ids).fetchone()
     return dict(row) if row else None
 
 

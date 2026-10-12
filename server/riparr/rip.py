@@ -310,7 +310,15 @@ def enqueue(force=False, expect=None):
         if fields:
             db.update_job(job_id, **fields)
 
-    fp = fingerprint(d, on_progress=scan_progress)
+    try:
+        fp = fingerprint(d, on_progress=scan_progress)
+    except UnreadableDisc as e:
+        log.info("Job %d: %s", job_id, e)
+        _abandon(str(e))
+        notify.send("failed", title=label or "A disc", body=str(e))
+        LED.announce("failed")
+        P.eject()
+        return None, str(e)
     db.update_job(job_id, fingerprint=fp)
 
     if expect and fp != expect:
@@ -436,6 +444,7 @@ def cancel(job_id):
     ev = _cancel.get(job_id)
     if ev:
         ev.set()
+    _share_away.pop(job_id, None)
     db.update_job(job_id, state="cancelled", phase=None,
                   finished_at=int(time.time()), error="Cancelled")
     _cleanup_staging(job)
@@ -688,11 +697,20 @@ def fingerprint(drive, on_progress=None):
     MakeMKV has to read the disc header anyway.
     """
     parts = [drive.get("label") or "", drive.get("media") or ""]
+    # A scan that fails or finds nothing is a refusal, not a shorter hash. The label
+    # and media type alone hashed to a *different* identity for the same disc, so a
+    # disc whose first scan timed out was ripped twice in one night -- the duplicate
+    # check had two fingerprints to compare and no reason to think they were one disc.
     try:
-        for t in read_titles(drive.get("device"), drive, on_progress=on_progress):
-            parts.append("%d:%d" % (t["index"], t["seconds"]))
-    except Exception:
-        pass
+        titles = list(read_titles(drive.get("device"), drive, on_progress=on_progress))
+    except Exception as e:
+        log.warning("Title scan failed: %s", e)
+        titles = []
+    if not titles:
+        raise UnreadableDisc("Couldn't read the disc's title list, so it can't be "
+                             "identified. Eject it and try again.")
+    for t in titles:
+        parts.append("%d:%d" % (t["index"], t["seconds"]))
     import hashlib
     return hashlib.sha1("|".join(parts).encode("utf-8", "replace")).hexdigest()
 
@@ -2057,6 +2075,9 @@ def _transfer(job, s, local_path, cancel_ev):
     if use_direct(s, kind) and local_path.startswith(_library_root(kind)):
         return _place_directly(job, s, local_path, name, transport, kind)
 
+    # Before `_avoid_clobbering` asks the share what is already there: a share that is
+    # not answering would have answered that with nothing.
+    _wait_for_share(job, transport, title, cancel_ev)
 
     name, warning = _avoid_clobbering(transport, name, job, s)
     if warning:
@@ -2080,25 +2101,6 @@ def _transfer(job, s, local_path, cancel_ev):
         db.update_job(job["id"], bytes_sent=sent, phase="Sending to your library",
                       stage_pct=round(frac, 4),
                       eta_seconds=int(elapsed / frac - elapsed) if frac > 0.02 else None)
-
-    # D11's backpressure, in the form this build can honour: the rip is already safe on
-    # the card, so a sleeping NAS is a wait, never a failure. The disc is not held --
-    # it has already been read -- so the user can carry on feeding the machine.
-    waited = 0
-    while not transport.reachable():
-        if cancel_ev.is_set():
-            raise Cancelled()
-        if waited == 0:
-            log.info("Job %d: the share is unreachable; waiting.", job["id"])
-            notify.send("share_lost", title=title,
-                        body="Your library share isn't answering. The rip is safe on "
-                             "the card and will finish on its own when the share is back.")
-            db.update_job(job["id"], phase="Waiting for your library to come back")
-        if waited > 6 * 3600:
-            raise RipFailed("Your library share hasn't answered in six hours. The rip "
-                            "is safe on the card — fix the share and retry this job.")
-        time.sleep(min(60, 5 + waited // 10))
-        waited += 30
 
     r = transport.put(local_path, name, progress=progress, cancel=cancel_ev)
     if cancel_ev.is_set():
@@ -2295,20 +2297,8 @@ def _transfer_season(job, s, base, cancel_ev):
                                               - (time.time() - _started))
                               if frac > 0.02 else None)
 
-            waited = 0
-            while not transport.reachable():
-                if cancel_ev.is_set():
-                    raise Cancelled()
-                if waited == 0:
-                    log.info("Job %d: the share is unreachable; waiting.", job["id"])
-                    db.update_job(job["id"],
-                                  phase="Waiting for your library to come back")
-                if waited > 6 * 3600:
-                    raise RipFailed("Your library share hasn't answered in six hours. "
-                                    "The episodes are safe on the card — fix the share "
-                                    "and retry this job.")
-                time.sleep(min(60, 5 + waited // 10))
-                waited += 30
+            _wait_for_share(job, transport, job.get("title") or "A season", cancel_ev,
+                            what="episodes")
 
             r = transport.put(local, name, progress=progress, cancel=cancel_ev)
             if cancel_ev.is_set():
@@ -2598,24 +2588,43 @@ def _backup_destination(name, job, exists):
                     "in your library. The backup is still on the card.")
 
 
-def _wait_for_share(job, transport, title, cancel_ev):
-    """D11's backpressure for a backup: the copy is safe on the card, so a sleeping NAS
-    is a wait, never a failure. The same patience `_transfer` has."""
-    waited = 0
-    while not transport.reachable():
-        if cancel_ev.is_set():
-            raise Cancelled()
-        if waited == 0:
-            log.info("Job %d: the share is unreachable; waiting.", job["id"])
-            notify.send("share_lost", title=title,
-                        body="Your library share isn't answering. The backup is safe on "
-                             "the card and will finish on its own when the share is back.")
-            db.update_job(job["id"], phase="Waiting for your library to come back")
-        if waited > 6 * 3600:
-            raise RipFailed("Your library share hasn't answered in six hours. The backup "
-                            "is safe on the card — fix the share and retry this job.")
-        time.sleep(min(60, 5 + waited // 10))
-        waited += 30
+SHARE_RETRY = 60            # how long the sender leaves a job whose share is away
+SHARE_GIVE_UP = 6 * 3600    # on the clock, from the first miss
+
+# job id -> (when the share first failed to answer, when to look again). In memory on
+# purpose: a restart starts the patience over, which is what the old in-loop counter
+# did too, and nothing else needs to see it.
+_share_away = {}
+
+
+def _wait_for_share(job, transport, title, cancel_ev, what="rip"):
+    """D11's backpressure: the copy is safe on the card, so a sleeping NAS is a wait,
+    never a failure. One look, not a loop -- an unanswered share raises `ShareAway`
+    and the sender comes back later, so the job behind this one is not held up.
+
+    This used to spin inside the transfer, polling the share object it was created with.
+    Two things were wrong with that: the share could be replaced in Settings and the loop
+    would never know, and the six-hour limit counted thirty seconds per sixty slept.
+    """
+    now = time.time()
+    if transport.reachable():
+        _share_away.pop(job["id"], None)
+        return
+    if cancel_ev.is_set():
+        raise Cancelled()
+    first = _share_away.get(job["id"], (now, 0))[0]
+    if job["id"] not in _share_away:
+        log.info("Job %d: the share is unreachable; waiting.", job["id"])
+        notify.send("share_lost", title=title,
+                    body="Your library share isn't answering. The %s is safe on the "
+                         "card and will finish on its own when the share is back." % what)
+        db.update_job(job["id"], phase="Waiting for your library to come back")
+    if now - first > SHARE_GIVE_UP:
+        _share_away.pop(job["id"], None)
+        raise RipFailed("Your library share hasn't answered in six hours. The %s is "
+                        "safe on the card — fix the share and retry this job." % what)
+    _share_away[job["id"]] = (first, now + SHARE_RETRY)
+    raise ShareAway()
 
 
 def _transfer_backup(job, s, local_dir, cancel_ev):
@@ -3367,6 +3376,19 @@ class Deferred(Exception):
     """
 
 
+class UnreadableDisc(Exception):
+    """The disc's structure could not be read, so it has no identity to rip under."""
+
+
+class ShareAway(Exception):
+    """The library share isn't answering. The rip is safe on the card.
+
+    Not a failure: the sender leaves the job where it is, takes whatever else is waiting,
+    and comes back to this one in a minute. Each return looks the share up afresh, so
+    a share replaced in Settings while a job waits is the one the job is sent to.
+    """
+
+
 def in_flight():
     """Jobs a worker is inside right now. `power` waits on these."""
     return sorted(_cancel.keys())
@@ -3482,6 +3504,9 @@ def _run_job(job):
     except Deferred:
         db.stage_end(job_id)
         _park(job_id, "stopped between episodes")
+    except ShareAway:
+        db.stage_end(job_id)
+        _park(job_id, "the library share isn't answering")
     except Cancelled:
         log.info("Job %d cancelled.", job_id)
         db.stage_end(job_id)
@@ -3759,12 +3784,20 @@ def _send_loop():
             _send_wake.wait(5)
             _send_wake.clear()
             continue
-        job = db.next_sending_job()
+        job = _next_to_send()
         if not job:
             _send_wake.wait(5)
             _send_wake.clear()
             continue
         _send_one(job)
+
+
+def _next_to_send():
+    """The oldest job ready to go, skipping the ones whose share is away until it is
+    time to look at them again."""
+    now = time.time()
+    waiting = [jid for jid, (_first, again) in _share_away.items() if again > now]
+    return db.next_sending_job(exclude=waiting)
 
 
 def _send_one(job):
@@ -3804,6 +3837,11 @@ def _send_one(job):
     except Deferred:
         db.stage_end(job["id"])
         _park(job["id"], "stopped between episodes")
+    except ShareAway:
+        # Phase and the first-miss time are already recorded; the job stays
+        # `transferring` with `bytes_sent=0`, which is what `_next_to_send` picks up
+        # once its minute is over.
+        db.stage_end(job["id"])
     except Cancelled:
         log.info("Job %d cancelled while sending.", job["id"])
         db.stage_end(job["id"])

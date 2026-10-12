@@ -10,6 +10,22 @@ bother updating.
 
 ## Unreleased
 
+**A library share that isn't answering no longer holds up every rip behind it.** A finished
+rip waiting on a share that has gone away now steps aside once a minute so the sender can
+push the others, and each time it comes back it looks the share up again — so replacing or
+re-adding the share in Settings takes effect without a restart. The six-hour limit is now
+six hours on the clock; it used to count half the time it slept, and ran nearer twelve.
+
+**The hourly Share Check now actually checks.** It used to list the share hostnames and
+report them reachable without asking, and said so every hour of a night the sender spent
+waiting on a name that no longer resolved. It now runs the same connection the sender
+uses, and a share that doesn't answer shows up as an error under System → Tasks.
+
+**A disc whose title scan comes back empty is refused, not ripped under a made-up
+identity.** The fingerprint was hashed from the label alone when the scan failed, which is
+a different fingerprint for the same disc — so one DVD was ripped twice in a night and the
+duplicate check never matched. The disc is now ejected with a message to try again.
+
 **Log files can live in memory, or not at all.** Settings → General → Log files now
 offers the SD card (as before), memory, or off. The two files are only ever read for bug
 reports, so if you would rather not have them wearing the card, move them to memory — still

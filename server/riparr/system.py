@@ -28,6 +28,7 @@ import zipfile
 
 from . import db
 from . import platform as P
+from . import shares as SH
 
 # Everything lives beside the database, so one directory is the whole appliance state.
 DATA_DIR = os.path.dirname(db.DB_PATH)
@@ -516,12 +517,18 @@ def _task_share_check():
     ids = db.shares_in_use()
     if not ids:
         return "No share configured"
-    names = []
+    # Actually asked, with the same `smbclient` the sender uses. This used to list the
+    # hostnames and call them reachable, and said so every hour of a night the sender
+    # spent waiting on a name that no longer resolved.
+    up, down = [], []
     for sid in ids:
         share = db.share_by_id(sid)
         if share:
-            names.append(share["host"])
-    return "Share%s %s reachable" % ("s" if len(names) > 1 else "", ", ".join(names))
+            (up if SH.Transport(share).reachable() else down).append(share["host"])
+    if down:
+        raise RuntimeError("Share%s %s not answering" % (
+            "s" if len(down) > 1 else "", ", ".join(down)))
+    return "Share%s %s reachable" % ("s" if len(up) > 1 else "", ", ".join(up))
 
 
 def _task_backup():
