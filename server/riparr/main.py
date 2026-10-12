@@ -798,6 +798,14 @@ async def put_settings(request: Request, user=Depends(require_user)):
         MK.apply_key(body["makemkv_key"])
         MK.record_expiry_for(body["makemkv_key"])
 
+    # The log files move (or stop) the moment the setting is saved, not at the next
+    # restart -- a user turning them off to spare the card should not have to reboot.
+    if "log_files" in body:
+        SY.apply_log_setting()
+        SY.component("Logs").info("Log files: %s", {
+            "card": "kept on the SD card", "memory": "kept in memory until the next "
+            "restart", "off": "off"}[SY.log_mode()])
+
     # Some settings stop meaning anything in direct mode -- see db.DIRECT_FORBIDS. The
     # response is the whole settings object, so a client that re-renders from it picks
     # the correction up for free; `adjusted` is there for one that wants to say why.
@@ -1814,7 +1822,7 @@ def system_events_clear(user=Depends(require_user)):
 
 @app.get("/api/system/logs")
 def system_logs(user=Depends(require_user)):
-    return {"path": SY.LOG_DIR, "files": SY.log_files()}
+    return {"mode": SY.log_mode(), "path": SY.log_dir(), "files": SY.log_files()}
 
 
 @app.get("/api/system/logs/{name}")

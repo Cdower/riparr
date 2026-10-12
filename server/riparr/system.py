@@ -21,6 +21,7 @@ import json
 import logging
 import logging.handlers
 import os
+import tempfile
 import threading
 import time
 import zipfile
@@ -32,6 +33,15 @@ from . import platform as P
 DATA_DIR = os.path.dirname(db.DB_PATH)
 LOG_DIR = os.path.join(DATA_DIR, "logs")
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
+
+# systemd's RuntimeDirectory= for the service: tmpfs on every systemd system, owned by
+# the service account, and already in use for the MakeMKV-installer handshake. It is the
+# "memory" home for the log files. Not /tmp: riparr.service sets PrivateTmp=, which hands
+# the service a bind of the host's /tmp, and Raspberry Pi OS keeps that on the card.
+RUNDIR = "/run/riparr"
+
+# The `log_files` setting. Anything else is read as "card".
+LOG_MODES = ("card", "memory", "off")
 
 # Small and few, deliberately. 1 MB x 5 is about a fortnight of ordinary operation and
 # caps the log directory at 10 MB across both files -- see the SD-card note above.
@@ -113,34 +123,84 @@ def init():
 
     if getattr(log, "_riparr_configured", False):
         return
-    os.makedirs(LOG_DIR, exist_ok=True)
     os.makedirs(BACKUP_DIR, exist_ok=True)
-
-    fmt = logging.Formatter("%(asctime)s|%(levelname)s|%(name)s|%(message)s",
-                            datefmt="%Y-%m-%d %H:%M:%S")
-    # Two files, matching the *arrs: riparr.txt is the ordinary record, riparr.debug.txt
-    # keeps everything. Whoever is helping you asks for the debug one.
-    main = logging.handlers.RotatingFileHandler(
-        os.path.join(LOG_DIR, "riparr.txt"), maxBytes=LOG_MAX_BYTES,
-        backupCount=LOG_BACKUPS, encoding="utf-8")
-    main.setLevel(logging.INFO)
-    main.setFormatter(fmt)
-
-    debug = logging.handlers.RotatingFileHandler(
-        os.path.join(LOG_DIR, "riparr.debug.txt"), maxBytes=LOG_MAX_BYTES,
-        backupCount=LOG_BACKUPS, encoding="utf-8")
-    debug.setLevel(logging.DEBUG)
-    debug.setFormatter(fmt)
 
     dbh = DbHandler()
     dbh.setLevel(logging.INFO)
     dbh.setFormatter(logging.Formatter("%(message)s"))
 
     log.setLevel(logging.DEBUG)
-    for h in (main, debug, dbh):
-        log.addHandler(h)
+    log.addHandler(dbh)
+    apply_log_setting()
     log._riparr_configured = True
     component("Riparr").info("Starting up")
+
+
+# ─────────────────────────────── log files ───────────────────────────────
+
+def log_mode():
+    """The `log_files` setting, with anything unrecognised read as the default."""
+    mode = db.get("log_files")
+    return mode if mode in LOG_MODES else "card"
+
+
+def log_dir():
+    """Where the two log files are being written right now, or None when they are off."""
+    mode = log_mode()
+    if mode == "off":
+        return None
+    if mode == "memory":
+        return _memory_dir()
+    return LOG_DIR
+
+
+def _memory_dir():
+    # On the box /run/riparr always exists (RuntimeDirectory=). On a developer's machine
+    # it does not, and the system temp directory is the honest stand-in.
+    if os.path.isdir(RUNDIR) and os.access(RUNDIR, os.W_OK):
+        return os.path.join(RUNDIR, "logs")
+    return os.path.join(tempfile.gettempdir(), "riparr-logs")
+
+
+# The handlers currently writing the files, so a change of setting can close them.
+_file_handlers = []
+
+
+def apply_log_setting():
+    """Point the file handlers at wherever `log_files` says, replacing any that are open.
+
+    Called at startup and again whenever the setting is saved, so the change takes
+    effect without a restart. The Events handler is untouched: it is the operational
+    record and lives in the database regardless.
+    """
+    for h in _file_handlers:
+        log.removeHandler(h)
+        h.close()
+    _file_handlers.clear()
+
+    where = log_dir()
+    if where is None:
+        return
+    fmt = logging.Formatter("%(asctime)s|%(levelname)s|%(name)s|%(message)s",
+                            datefmt="%Y-%m-%d %H:%M:%S")
+    # Two files, matching the *arrs: riparr.txt is the ordinary record, riparr.debug.txt
+    # keeps everything. Whoever is helping you asks for the debug one.
+    try:
+        os.makedirs(where, exist_ok=True)
+        for name, level in (("riparr.txt", logging.INFO),
+                            ("riparr.debug.txt", logging.DEBUG)):
+            h = logging.handlers.RotatingFileHandler(
+                os.path.join(where, name), maxBytes=LOG_MAX_BYTES,
+                backupCount=LOG_BACKUPS, encoding="utf-8")
+            h.setLevel(level)
+            h.setFormatter(fmt)
+            log.addHandler(h)
+            _file_handlers.append(h)
+    except OSError as e:
+        # A log directory that cannot be written is not a reason to refuse to start.
+        # The Events page still records everything that matters.
+        component("Logs").warning("Cannot write log files to %s (%s); none are being "
+                                  "kept", where, e)
 
 
 def events(limit=50, offset=0, levels=None):
@@ -164,12 +224,13 @@ def clear_events():
     component("Events").info("Event log cleared")
 
 
-# ─────────────────────────────── log files ───────────────────────────────
-
 def log_files():
     """Every rotated file, newest write first, as the Log Files page lists them."""
+    where = log_dir()
+    if where is None:
+        return []
     out = []
-    for path in glob.glob(os.path.join(LOG_DIR, "*.txt*")):
+    for path in glob.glob(os.path.join(where, "*.txt*")):
         try:
             st = os.stat(path)
         except OSError:
@@ -183,10 +244,11 @@ def log_files():
 
 def log_path(name):
     """Resolve a log filename, refusing anything that escapes the log directory."""
-    if "/" in name or "\\" in name or name.startswith("."):
+    where = log_dir()
+    if where is None or "/" in name or "\\" in name or name.startswith("."):
         return None
-    path = os.path.join(LOG_DIR, name)
-    if os.path.realpath(os.path.dirname(path)) != os.path.realpath(LOG_DIR):
+    path = os.path.join(where, name)
+    if os.path.realpath(os.path.dirname(path)) != os.path.realpath(where):
         return None
     return path if os.path.isfile(path) else None
 
@@ -198,12 +260,13 @@ def delete_log_files():
     to an unlinked inode, and the log silently stops appearing on disk.
     """
     live = {"riparr.txt", "riparr.debug.txt"}
+    where = log_dir()
     n = 0
     for f in log_files():
         if f["name"] in live:
             continue
         try:
-            os.unlink(os.path.join(LOG_DIR, f["name"]))
+            os.unlink(os.path.join(where, f["name"]))
             n += 1
         except OSError:
             pass

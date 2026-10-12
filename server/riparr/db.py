@@ -348,6 +348,10 @@ DEFAULTS = {
     "warn_key_days": 7,
     "update_channel": "stable",
     "auto_check_updates": True,
+    # Where riparr.txt and riparr.debug.txt go: "card" (beside the database), "memory"
+    # (tmpfs, gone at reboot) or "off". Nothing reads them but the Log Files page, so a
+    # user who would rather spare the SD card loses nothing but bug-report material.
+    "log_files": "card",
     # The last version announced, so each release is mentioned once rather than every
     # six hours until somebody installs it. Not a preference -- state -- but it lives
     # here because this is where the box keeps things that must survive a power cut.

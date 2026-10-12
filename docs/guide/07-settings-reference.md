@@ -373,6 +373,7 @@ the password itself is never written down.
 | **Change password** | Web interface login. Forgotten it? Put an empty file called `riparr-reset` on the card's boot partition — no re-flash, and nothing else is lost |
 | **Update** | Check now, and install. See [Updates](#updates) below |
 | **Logs** | Download a log bundle for bug reports |
+| **Log files** | Where `riparr.txt` and `riparr.debug.txt` are kept. **On the SD card** (default) survives restarts. **In memory** spares the card — the files are still there to download under System → Log Files, until the box restarts. **Off** writes nothing. Nothing but the Log Files page reads them, and the Events page records what the box does regardless. Takes effect when you save |
 | **Restart / shut down** | In the account menu (the person icon, top right), not on a page. Rarely needed — the box is built to survive losing power, but shutting down here is the safe way to stop it before unplugging |
 
 ### Updates

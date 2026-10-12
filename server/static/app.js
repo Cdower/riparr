@@ -2932,6 +2932,21 @@ settingsPages.general = async (s) => {
       <div class="btn-row"><button class="btn" id="pw-go">Change password</button></div>
     </div></div>
 
+    <div class="section"><h2>Log files</h2><div>
+      <label class="f"><span>Keep them</span>
+        <select data-set="log_files">
+          ${opt("card", "On the SD card (default)", s.log_files || "card")}
+          ${opt("memory", "In memory — gone when the box restarts", s.log_files)}
+          ${opt("off", "Nowhere — turn them off", s.log_files)}
+        </select>
+        <span class="help"><code>riparr.txt</code> and <code>riparr.debug.txt</code> are
+          for bug reports; nothing else reads them, and the Events page keeps working
+          either way. Every write is a write to the card, so if you would rather spare
+          it, keep them in memory — you can still download them under
+          System → Log Files until the next restart — or turn them off. Takes effect
+          when you save, no restart needed.</span></label>
+    </div></div>
+
     <div class="section"><h2>Updates</h2><div>
       ${sw("auto_check_updates", "Check for updates automatically", s.auto_check_updates,
           "Checks the official repository once a day. Nothing installs without you asking.")}
@@ -3395,10 +3410,19 @@ systemPages.logs = async () => {
       <button class="tool" id="lg-refresh"><span class="ti">${icon("arrows-rotate")}</span>Refresh</button>
       <button class="tool" id="lg-delete"><span class="ti">${icon("trash-can")}</span>Delete</button>
     </div>
-    <div class="alert">Log files are in <code>${esc(l.path)}</code>.
-      <br><code>riparr.txt</code> is the ordinary record; <code>riparr.debug.txt</code>
-      keeps everything and is the one to send if you are asking for help. Each is capped
-      at 1 MB and rotated five times, because every write is a write to the SD card.</div>
+    <div class="alert">${l.mode === "off"
+      ? `Log files are turned off. Turn them on under
+         <a href="#/settings/general">Settings → General → Log files</a> if somebody
+         helping you asks for one. The Events page records what the box does either way.`
+      : `Log files are in <code>${esc(l.path)}</code>${l.mode === "memory"
+          ? `, in memory — they do not survive a restart, which is the point: nothing
+             here is written to the SD card. Change that under
+             <a href="#/settings/general">Settings → General → Log files</a>.`
+          : `.`}
+         <br><code>riparr.txt</code> is the ordinary record; <code>riparr.debug.txt</code>
+         keeps everything and is the one to send if you are asking for help. Each is
+         capped at 1 MB and rotated five times, because every write is a write to the
+         SD card.`}</div>
     <div class="section"><h2>Files</h2>
       <table>
         <thead><tr><th>Filename</th><th>Size</th><th>Last Write Time</th>

@@ -10,6 +10,12 @@ bother updating.
 
 ## Unreleased
 
+**Log files can live in memory, or not at all.** Settings → General → Log files now
+offers the SD card (as before), memory, or off. The two files are only ever read for bug
+reports, so if you would rather not have them wearing the card, move them to memory — still
+downloadable under System → Log Files until the next restart — or turn them off. The
+Events page is unaffected. The change takes effect when you save, with no restart.
+
 **On boards with a power button (the Banana Pro's SW1), it works, and it waits for your
 rip.** Press it once and the box finishes what it's doing — all the way into your library
 — then turns off. Press it twice and it stops after the current step instead, and anything
