@@ -11,6 +11,7 @@ below are what they quote.
 Run, from server/:
 
     uv run --locked python bench.py [--cycles 200] [--idle 15] [--json PATH] [--keep DIR]
+                                    [--no-profile]
     uv run --locked python bench.py --url http://riparr.local:9797 --user U --password P
 
 Standard library only, so it runs anywhere the service does. The one import from the
@@ -41,6 +42,11 @@ POWER = "/api/system/power"
 POWER_EVERY = 3
 USER = "bench"
 PASSWORD = "benchbench1"
+
+# Printed in place of the profile tables, so a run without them reads as deliberate and a
+# comparison of two runs says which one was the baseline.
+PROFILER_OFF = ("The profiler was off for this run (--no-profile), so there are no hot "
+                "frames; its CPU figures are the baseline for a run with it on.")
 
 
 class Client:
@@ -80,11 +86,18 @@ def free_port():
         return s.getsockname()[1]
 
 
-def start(tmp, port):
-    """Launch the service on a throwaway database and wait until it answers."""
+def start(tmp, port, profile=True):
+    """Launch the service on a throwaway database and wait until it answers.
+
+    With `profile` off, RIPARR_PROFILE_DIR is left out of the child's environment (and
+    removed, in case this shell exported one), so no sampler runs at all. That is the
+    baseline the profiler's own cost is measured against.
+    """
     env = dict(os.environ, RIPARR_DB=os.path.join(tmp, "bench.db"), RIPARR_APPLIANCE="0",
-               RIPARR_MOCK_FAST="1", RIPARR_PROFILE_DIR=os.path.join(tmp, "prof"),
-               PYTHONUNBUFFERED="1")
+               RIPARR_MOCK_FAST="1", PYTHONUNBUFFERED="1")
+    env.pop("RIPARR_PROFILE_DIR", None)
+    if profile:
+        env["RIPARR_PROFILE_DIR"] = os.path.join(tmp, "prof")
     # stderr goes to a file, not a pipe: a pipe nobody reads fills and stalls the
     # service, and a file lets a failed start show what the child said.
     errlog = open(os.path.join(tmp, "server.err"), "w+")
@@ -280,6 +293,8 @@ def markdown(result, mode, cycles):
             out += ["This is a wall-clock profile (macOS has no per-thread CPU clock "
                     "here), so threads that are asleep count as busy. Read the shape, "
                     "not the percentages.", ""]
+    elif result.get("profiler_off"):
+        out += [PROFILER_OFF, ""]
     return "\n".join(out)
 
 
@@ -293,7 +308,7 @@ def run_local(args, result):
     tmp = tempfile.mkdtemp(prefix="riparr-bench-")
     try:
         port = free_port()
-        proc = start(tmp, port)
+        proc = start(tmp, port, profile=not args.no_profile)
         try:
             client = Client("127.0.0.1", port)
             login(client, USER, PASSWORD, first_run=True)
@@ -303,6 +318,9 @@ def run_local(args, result):
             result["poll"] = poll(client, proc.pid, args.cycles)
         finally:
             stop(proc)
+        if args.no_profile:
+            result["profiler_off"] = True
+            return profiling.MODE
         prof_dir = os.path.join(tmp, "prof")
         result.update(profile_report(prof_dir))
         if args.keep:
@@ -321,6 +339,8 @@ def main():
     ap.add_argument("--idle", type=float, default=15)
     ap.add_argument("--json", metavar="PATH")
     ap.add_argument("--keep", metavar="DIR", help="copy the .folded files here")
+    ap.add_argument("--no-profile", action="store_true",
+                    help="run the service with the profiler off, to measure what it costs")
     ap.add_argument("--url", help="benchmark a running box instead of starting one")
     ap.add_argument("--user", default=USER)
     ap.add_argument("--password", default=PASSWORD)

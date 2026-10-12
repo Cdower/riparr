@@ -4,7 +4,9 @@
 The bench is what Tasks 4 and 5 quote before and after, so a bench that quietly prints
 nothing useful would make every later claim worthless. This runs it small (six cycles,
 one second idle) against a throwaway mock-mode service and checks the shape of what
-comes out, not the numbers themselves, which belong to the machine.
+comes out, not the numbers themselves, which belong to the machine. A second, smaller run
+with `--no-profile` checks that the baseline for the profiler's own cost still runs and
+says the profiler was off.
 
 Run: uv run --locked python bench.test.py
 """
@@ -28,15 +30,12 @@ def check(name, got, want):
         failures.append(name)
 
 
-with tempfile.TemporaryDirectory() as tmp:
-    out = os.path.join(tmp, "out.json")
-    keep = os.path.join(tmp, "kept")
+def bench(*args):
     # Its own session, so a timeout can take the bench and the server it started down
     # together. Killing only the bench with SIGKILL would skip its cleanup and leave
     # uvicorn running.
     child = subprocess.Popen(
-        [sys.executable, "bench.py", "--cycles", "6", "--idle", "1", "--json", out,
-         "--keep", keep],
+        [sys.executable, "bench.py", *args],
         cwd=HERE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         start_new_session=True)
     try:
@@ -44,7 +43,13 @@ with tempfile.TemporaryDirectory() as tmp:
     except subprocess.TimeoutExpired:
         os.killpg(child.pid, signal.SIGKILL)
         raise
-    run = subprocess.CompletedProcess(child.args, child.returncode, stdout, stderr)
+    return subprocess.CompletedProcess(child.args, child.returncode, stdout, stderr)
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    out = os.path.join(tmp, "out.json")
+    keep = os.path.join(tmp, "kept")
+    run = bench("--cycles", "6", "--idle", "1", "--json", out, "--keep", keep)
     if run.returncode:
         print(run.stdout, run.stderr)
     check("exit status", run.returncode, 0)
@@ -60,6 +65,15 @@ with tempfile.TemporaryDirectory() as tmp:
     check("folded files kept",
           bool(os.path.isdir(keep) and [f for f in os.listdir(keep) if f.endswith(".folded")]),
           True)
+
+    run = bench("--no-profile", "--cycles", "3", "--idle", "1")
+    if run.returncode:
+        print(run.stdout, run.stderr)
+    check("--no-profile exits 0", run.returncode, 0)
+    check("--no-profile says the profiler was off",
+          "The profiler was off for this run" in run.stdout, True)
+    check("--no-profile still measures the poll", "| /api/status |" in run.stdout, True)
+    check("--no-profile prints no profile tables", "Hottest frames" in run.stdout, False)
 
 if failures:
     print(f"\n{len(failures)} failed: {', '.join(failures)}")

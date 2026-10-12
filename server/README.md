@@ -93,7 +93,9 @@ p50, p95 and worst latency, the process's CPU seconds idle and per cycle under l
 the hottest frames from the profiler's local dump. On macOS that profile counts wall
 time, so read its shape rather than its percentages. `--json PATH` saves the numbers and
 `--keep DIR` keeps the `.folded` files, which load in speedscope.app as "collapsed
-stacks". Run it before and after a change that is meant to make the service cheaper:
+stacks". `--no-profile` runs the service with the profiler off and skips the profile
+tables, so two runs, with and without it, show what the sampler itself costs. Run it
+before and after a change that is meant to make the service cheaper:
 
 ```sh
 uv run --locked python bench.py
