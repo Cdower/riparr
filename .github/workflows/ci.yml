@@ -268,7 +268,7 @@ jobs:
         run: |
           /tmp/venv-tests/bin/python server/profiling-settings.test.py
 
-      # /api/status is polled every second by every open dashboard, and the optimisations
+      # /api/status is polled about once a second during a rip by every open dashboard, and the optimisations
       # behind it are caches. A cache that is not invalidated shows something stale: a
       # setting that reverts after a save, a user count that stays at zero after the
       # first account, queue medians that ignore a job that just finished. This pins each
@@ -279,7 +279,7 @@ jobs:
           /tmp/venv-tests/bin/python server/status-cache.test.py
 
       # MakeMKV prints a progress line many times a second, and each one used to be a
-      # directory listing, an UPDATE and a commit on a 1 GHz board with an SD card. Now
+      # directory listing, an UPDATE and a commit. Now
       # it is written at most twice a second. Without this check a change that drops the
       # throttle brings back sixty writes for sixty lines, and nothing else would notice,
       # because the rip still finishes. It also checks that settings save, config import
@@ -292,9 +292,9 @@ jobs:
       # The benchmark is what the speed-up claims are measured with, so a benchmark that
       # quietly prints nothing useful would make them worthless. This starts a real
       # uvicorn in mock mode, runs six cycles and checks the report has the status row,
-      # the idle and profile sections, the CPU figure and the saved stacks. It takes
-      # about thirty seconds, most of it the server starting, and it is the one step here
-      # that needs a free port.
+      # the idle and profile sections, the CPU figure and the saved stacks. It starts a
+      # real server, so it is the slowest of these and the one step here that needs a free
+      # port.
       - name: The benchmark runs and reports what it promises
         run: |
           /tmp/venv-tests/bin/python server/bench.test.py
