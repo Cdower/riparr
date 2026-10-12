@@ -86,6 +86,39 @@ s.tick(1005.00)                       # the wall clock stepped backwards
 check("a backward clock step closes the window", len(windows), 3)
 check("a backward step never sends from > until", windows[2][0] <= windows[2][1], True)
 
+# ── a burst that ends before the tick ──
+# Thread 1 is caught working in `_leaf`, then on the next tick is parked in a condition
+# wait with CPU burned in between: that CPU belongs to `_leaf`, not to threading.py. Thread
+# 2 has only ever been seen parked, so its CPU stays on the parked stack, there being
+# nothing better to say about it.
+class Frame:
+    def __init__(self, filename, name, back=None):
+        self.f_code = type("c", (), {"co_filename": filename, "co_name": name})()
+        self.f_back = back
+parked = Frame("/usr/lib/python3.13/threading.py", "wait", Frame(os.path.join(HERE, "riparr", "rip.py"), "_idle"))
+where = {1: f1, 2: parked}
+cpu = {1: 0, 2: 0}
+burst = []
+s = PR.Sampler(hz=100, window=60, on_window=lambda a, b, t: burst.append(t),
+               clock=lambda ident: cpu.get(ident), frames=lambda: dict(where),
+               threads=lambda: [type("Th", (), {"ident": 1, "name": "AnyIO worker thread"})(),
+                                type("Th", (), {"ident": 2, "name": "riparr-rip"})()])
+s.tick(2000.00)                       # first sight: baselines only
+cpu[1] += 10_000_000                  # 10 ms, caught in _leaf
+s.tick(2000.01)
+where[1] = parked
+cpu[1] += 20_000_000                  # 20 ms more, but parked by the time the tick lands
+cpu[2] += 20_000_000
+s.tick(2000.02)
+s.flush(2000.03)
+lines = burst[0].splitlines()
+check("a parked thread's CPU lands on its last busy stack",
+      any(l.startswith("worker;") and l.endswith(":_leaf 3") for l in lines), True)
+check("and none of it on the parking frame",
+      any(l.startswith("worker;") and "threading.py" in l for l in lines), False)
+check("a thread never caught busy keeps its parked stack",
+      "riparr-rip;riparr/rip.py:_idle;threading.py:wait 2" in lines, True)
+
 # ── the real clock, where there is one ──
 clk = PR.thread_cpu_clock(threading.get_ident())
 if sys.platform.startswith("linux"):
@@ -112,11 +145,17 @@ check("the profiler does not sample itself", "riparr-profiler" in got[0], False)
 seen = []
 class Stub(http.server.BaseHTTPRequestHandler):
     status = 200
+    echo = False
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
         seen.append((self.path, self.headers.get("Authorization"),
                      self.headers.get("Content-Type"), self.rfile.read(n).decode()))
-        self.send_response(Stub.status); self.end_headers(); self.wfile.write(b"nope" if Stub.status != 200 else b"")
+        # `echo` reflects the request headers back, as a debugging proxy or a captive
+        # portal might, so the credential is in the body the uploader reads.
+        out = b"" if Stub.status == 200 else (
+            ("you sent Authorization: %s" % self.headers.get("Authorization")).encode()
+            if Stub.echo else b"nope")
+        self.send_response(Stub.status); self.end_headers(); self.wfile.write(out)
     def log_message(self, format, *args): pass
 srv = http.server.HTTPServer(("127.0.0.1", 0), Stub)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -137,6 +176,14 @@ Stub.status = 401
 ok, detail = up.send(1, 2, "x 1\n")
 check("401 is not ok and says so", (ok, detail.startswith("HTTP 401")), (False, True))
 check("the token is not in the error", "glc_secret" in detail, False)
+Stub.echo = True
+ok, detail = up.send(1, 2, "x 1\n")
+b64 = base64.b64encode(b"12345:glc_secret").decode()
+check("an echoed header is a failure that still says why", (ok, detail.startswith("HTTP 401 you sent")), (False, True))
+check("the echoed token is not in the error", "glc_secret" in detail, False)
+check("nor is its base64", b64 in detail, False)
+check("nor a fragment of the Basic value", "Basic" in detail, False)
+Stub.echo = False
 check("a bad scheme is refused without a request",
       PR.Uploader("ftp://x", "u", "t", "riparr.cpu", {}).send(1, 2, "x 1\n")[0], False)
 Stub.status = 200

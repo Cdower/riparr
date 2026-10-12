@@ -23,6 +23,27 @@ own CPU clock, so a thread that slept through a tick contributes nothing and its
 is never even walked. macOS has no such call; there every live thread weighs 1 per tick
 and the profile is named `riparr.wall` so nobody mistakes it for CPU.
 
+## A burst that ends before the tick
+
+The clock says how much CPU a thread burned since the last tick, not where, and the only
+stack there is to charge it to is the one the thread is on when the tick lands. A
+threadpool worker that handles a request in a millisecond and goes back to waiting would
+be charged to `threading.py:wait`, and the event loop's per-request work to
+`selectors.py:select`: the flame graph would say the service spends its CPU waiting, which
+is the one thing a CPU profile must never say. So when a thread's leaf frame is in one of
+the modules a thread parks in (`PARKING`), the delta goes to the last stack that thread
+was seen on with a leaf anywhere else, which is where the work most likely happened. A
+thread that has never been caught busy keeps the parked stack, because there is nothing
+better to say about it. Wall mode moves nothing: there a tick weighs 1 wherever the thread
+is, and a parked thread really is spending its wall time parked.
+
+Two limits remain. The remembered stack is the last busy one the sampler happened to see,
+so a thread whose bursts always fall between ticks, and run different code each time, has
+all of them charged to whichever busy stack it was last caught on. And `time.sleep` is C,
+with no Python frame of its own, so a short burst that ends in a sleep leaves the thread's
+leaf in the function that called `sleep`: the CPU is charged to the right function but not
+to the callees that did the work.
+
 ## Nothing here touches the card
 
 Closed windows go over the network, or to `RIPARR_PROFILE_DIR` when that is set (which
@@ -54,6 +75,17 @@ TIMEOUT = 15
 # How long stopping the uploader waits for its last send. apply() holds the module lock
 # while it waits, and a settings save should not hang on Grafana for the full TIMEOUT.
 STOP_WAIT = 2
+
+# The modules a thread waits in: locks and conditions, queues, the event loop's select,
+# socket and TLS reads, a child process's exit, and the executors' idle loop. A leaf frame
+# in one of these means the thread is parked, so the CPU it burned since the last tick was
+# burned somewhere else (see "A burst that ends before the tick" above). Compared on the
+# path's tail, so the standard library's copy and a vendored one both count.
+PARKING = (
+    "threading.py", "queue.py", "selectors.py", "socket.py", "ssl.py", "subprocess.py",
+    "concurrent/futures/thread.py", "concurrent/futures/_base.py",
+    "asyncio/base_events.py", "asyncio/selector_events.py",
+)
 
 # The profiler's own threads. Both names start with the same prefix so that one check
 # keeps them out of every sample: a profile dominated by the profiler is no profile.
@@ -125,6 +157,19 @@ def _display_path(filename):
     return got
 
 
+# The same per-file caching for the parking test, which runs once per walked stack.
+_parking = {}
+
+
+def _parks(filename):
+    got = _parking.get(filename)
+    if got is None:
+        tail = filename.replace(os.sep, "/")
+        got = any(tail == m or tail.endswith("/" + m) for m in PARKING)
+        _parking[filename] = got
+    return got
+
+
 def frame_name(frame):
     """`<path>:<function>`, with no line number.
 
@@ -191,6 +236,7 @@ class Sampler:
         self._frames = frames or sys._current_frames
         self._threads = threads or threading.enumerate
         self._last = {}            # ident -> CPU ns at the previous tick
+        self._busy = {}            # ident -> the last stack seen with a non-parking leaf
         self._stacks = {}          # (thread, frame, ..., leaf) -> samples
         self._window_start = None
         self._lock = threading.Lock()
@@ -250,6 +296,7 @@ class Sampler:
                 ns = self._clock(ident)
                 if ns is None:
                     self._last.pop(ident, None)
+                    self._busy.pop(ident, None)
                     continue
                 prev = self._last.get(ident)
                 self._last[ident] = ns
@@ -258,15 +305,25 @@ class Sampler:
                 if prev is None or ns <= prev:
                     continue
                 weight = (ns - prev) / self._tick_ns
+            parked = self._clock is not None and _parks(frame.f_code.co_filename)
             names = []
             while frame is not None and len(names) < MAX_DEPTH:
                 names.append(frame_name(frame))
                 frame = frame.f_back
             names.append(thread_name(th))
             key = tuple(reversed(names))
+            # CPU seen on a parked thread was burned before it parked: charge it to where
+            # the thread was last caught working, if it ever was (the module docstring
+            # has the reasoning and the limits).
+            if parked:
+                key = self._busy.get(ident, key)
+            elif self._clock is not None:
+                self._busy[ident] = key
             self._stacks[key] = self._stacks.get(key, 0.0) + weight
         for gone in [i for i in self._last if i not in live]:
             del self._last[gone]
+        for gone in [i for i in self._busy if i not in live]:
+            del self._busy[gone]
         for gone in [i for i in self._clockids if i not in live]:
             del self._clockids[gone]
 
@@ -368,15 +425,25 @@ class Uploader:
         req = urllib.request.Request(
             self.url + "/ingest?" + query, data=text.encode(), method="POST",
             headers={"Authorization": "Basic " + auth, "Content-Type": "text/plain"})
+        # Everything a server could echo back that would let a reader sign in as this
+        # box: the whole header value, the base64 credential on its own (which decodes to
+        # user:token in one step), and the bare token. Longest first, so the header is
+        # replaced whole rather than leaving "Basic ***" around a fragment.
+        creds = [x for x in ("Basic " + auth, auth, self.token) if x]
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 return True, "HTTP %d" % r.status
         except urllib.error.HTTPError as e:
+            # Read well past the 200 characters shown, so that a credential which starts
+            # inside them is read whole and scrubbed, rather than cut at the edge into a
+            # prefix the replace below would not recognise.
             try:
-                body = e.read(200).decode("utf-8", "replace").strip()
+                body = e.read(4096).decode("utf-8", "replace")
             except Exception:
                 body = ""
-            detail = ("HTTP %d %s" % (e.code, body[:200])).strip()
+            for x in creds:
+                body = body.replace(x, "***")
+            detail = ("HTTP %d %s" % (e.code, body.strip()[:200])).strip()
         except urllib.error.URLError as e:
             detail = str(e.reason)
         except ValueError:
@@ -385,10 +452,11 @@ class Uploader:
             detail = "The profiling URL is not valid"
         except OSError as e:
             detail = str(e) or e.__class__.__name__
-        # Belt and braces: a server that echoes the Authorization header back in its
-        # error body must not put the token on the Settings page.
-        if self.token:
-            detail = detail.replace(self.token, "***")
+        # Belt and braces: whatever path the detail came from, a server that echoes the
+        # Authorization header back must not put the credential on the Settings page, in
+        # last_error or on the Events page.
+        for x in creds:
+            detail = detail.replace(x, "***")
         return False, detail
 
     def _deliver(self, from_ts, until_ts, text):
