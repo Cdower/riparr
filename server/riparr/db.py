@@ -434,6 +434,7 @@ def init():
             if name not in have:
                 c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, decl))
     c.commit()
+    _ensure_default_share()
 
 
 def get(key, default=None):
@@ -635,6 +636,36 @@ def delete_share(share_id):
     c = conn()
     c.execute("DELETE FROM shares WHERE id=?", (share_id,))
     c.commit()
+    _ensure_default_share()
+
+
+def set_default_share(share_id):
+    """Make this the share everything falls back to. False if there is no such share."""
+    c = conn()
+    if not c.execute("SELECT 1 FROM shares WHERE id=?", (share_id,)).fetchone():
+        return False
+    c.execute("UPDATE shares SET is_default=(id=?)", (share_id,))
+    c.commit()
+    return True
+
+
+def _ensure_default_share():
+    """Exactly one default whenever there is any share at all.
+
+    `default_share()` and the mount script both fall back to the oldest share when none
+    is flagged, so a box with shares and no flag *behaved* as if the oldest were the
+    default while every reader of the flag itself -- the badge, the mount path --
+    said otherwise. That is how one NAS came to be mounted twice. Removing the default
+    used to leave the table in exactly that state.
+    """
+    c = conn()
+    flagged = c.execute("SELECT COUNT(*) n FROM shares WHERE is_default=1").fetchone()["n"]
+    if flagged == 1:
+        return
+    row = c.execute("SELECT id FROM shares ORDER BY is_default DESC, id LIMIT 1").fetchone()
+    if row:
+        c.execute("UPDATE shares SET is_default=(id=?)", (row["id"],))
+        c.commit()
 
 
 # ── jobs / discs (queue + history) ──

@@ -90,7 +90,9 @@ next one.
 | **Test and save** | Writes a real file into the folder, reads it back, compares it, deletes it. A share is not saved until that passes |
 
 The first share you add becomes the default, and adding more does not change that — so
-adding a share for box sets cannot quietly redirect your films.
+adding a share for box sets cannot quietly redirect your films. **Make default** on any
+other share moves it; removing the default makes the oldest remaining share the default.
+The default is the one that mounts at `/srv/library`, so the box reconnects after a change.
 
 > **`NT_STATUS_LOGON_FAILURE` usually is not the password.** Many NAS boxes answer a
 > share name they do not recognise with the same error they use for a bad password,

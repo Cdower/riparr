@@ -10,6 +10,11 @@ bother updating.
 
 ## Unreleased
 
+**The default share can be changed.** Each share on Settings → Library now has a *Make
+default* button. Removing the default share makes the oldest remaining one the default
+instead of leaving none — a box whose only share wasn't its default is how one NAS came to
+be mounted twice.
+
 **A library share that isn't answering no longer holds up every rip behind it.** A finished
 rip waiting on a share that has gone away now steps aside once a minute so the sender can
 push the others, and each time it comes back it looks the share up again — so replacing or

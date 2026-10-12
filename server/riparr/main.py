@@ -1033,6 +1033,20 @@ def shares_create(body: ShareCreate, user=Depends(require_user)):
     return {"ok": True, "id": sid, "test": result}
 
 
+@app.post("/api/shares/{share_id}/default")
+def shares_set_default(share_id: int, user=Depends(require_user)):
+    """Make a share the default: where every kind of disc goes unless pointed
+    elsewhere, and the one that mounts at /srv/library.
+
+    The mount path follows the flag, so the root side is asked to mount again; a box
+    without that door is left for the Reconnect button, which says what to do.
+    """
+    if not db.set_default_share(share_id):
+        raise HTTPException(status_code=404, detail="No such share.")
+    P.request_remount()
+    return {"ok": True}
+
+
 @app.delete("/api/shares/{share_id}")
 def shares_delete(share_id: int, user=Depends(require_user)):
     """Remove a share, and stop anything pointing at it.

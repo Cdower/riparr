@@ -1913,6 +1913,8 @@ settingsPages.library = async (s) => {
               · ${sh.username ? `as ${esc(sh.username)}` : "as a guest"}
               · last verified ${ago(sh.verified_at)}</div>
           </div>
+          ${sh.is_default ? "" : `<button class="btn" data-default-share="${sh.id}"
+            title="Where every kind of disc goes unless pointed elsewhere">Make default</button>`}
           <button class="btn quiet-danger" data-del-share="${sh.id}">Remove</button>
         </div>`).join("")}</div>` : ""}
       <div id="share-add"></div>
@@ -4334,6 +4336,11 @@ function wireContent(section, sub) {
   $$("[data-del-share]").forEach(b => b.onclick = async () => {
     await api.del(`/api/shares/${b.dataset.delShare}`);
     toast("Share removed"); route();
+  });
+
+  $$("[data-default-share]").forEach(b => b.onclick = async () => {
+    await api.post(`/api/shares/${b.dataset.defaultShare}/default`, {});
+    toast("Default share changed"); route();
   });
 
   /* ── the saved network list ──
