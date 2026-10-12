@@ -154,13 +154,25 @@ def _first_partition(f):
 
 
 def _ext4_cfg(args):
+    """The settings armbian.provision needs, from custom.toml plus riparr.conf.
+
+    custom.toml carries the network and the key. riparr.conf carries the two things it
+    does not: the port, and which board this is -- from which come the board's own
+    riparr.conf lines (boards.conf_lines), so an ext4 card gets the same board-specific
+    settings a FAT boot partition gets from core.build_conf.
+    """
     import armbian
-    port = 9797
+    import boards
+    port, board_id = 9797, None
     if args.conf and os.path.exists(args.conf):
         for line in open(args.conf, encoding="utf-8"):
             if line.startswith("RIPARR_PORT="):
                 port = int(line.split("=", 1)[1].strip())
-    return armbian.cfg_from_custom_toml(args.toml, port)
+            elif line.startswith("RIPARR_BOARD="):
+                board_id = line.split("=", 1)[1].strip()
+    cfg = armbian.cfg_from_custom_toml(args.toml, port)
+    cfg["extra_conf"] = boards.conf_lines(board_id)
+    return cfg
 
 
 def _configure_image(args, st):

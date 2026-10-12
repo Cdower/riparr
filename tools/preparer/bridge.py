@@ -232,13 +232,13 @@ class Bridge:
         if not b:
             return {"ok": False, "error": "Unknown board."}
         core_publish(self.image_path, phase="starting", board=board_id,
-                     name=b["name"], done=0, total=0)
+                     name=b.name, done=0, total=0)
         self.nosleep.hold("downloading the OS image")
 
         def run():
             def progress(done, total):
                 core_publish(self.image_path, phase="downloading", board=board_id,
-                             name=b["name"], done=done, total=total)
+                             name=b.name, done=done, total=total)
             # The whole body, not just the download. "Never let the thread die silently"
             # was the intent before and it only covered the call: the *publish* below
             # raised, the thread died anyway, and the interface waited for a phase that
@@ -277,12 +277,12 @@ class Bridge:
         except Exception:
             return {"phase": "idle"}
 
-    def scan_wifi(self):
-        nets, method = core.scan_networks()
+    def scan_wifi(self, board_id=None):
+        nets, method = core.scan_networks(board_id)
         return {"networks": nets, "method": method,
                 "detail": core.wifi_detail_status()}
 
-    def enable_wifi_detail(self):
+    def enable_wifi_detail(self, board_id=None):
         """Ask macOS for Location Services, then rescan. Only ever user-initiated.
 
         A live scan needs this permission or every SSID comes back nil, but plenty of
@@ -290,7 +290,7 @@ class Bridge:
         this is a button on the Wi-Fi screen rather than a prompt on the way in.
         """
         ok = core.request_wifi_detail()
-        nets, method = core.scan_networks()
+        nets, method = core.scan_networks(board_id)
         return {"ok": ok, "networks": nets, "method": method,
                 "detail": core.wifi_detail_status()}
 

@@ -16,7 +16,22 @@ docs/design/board-support.md. Two things it settles are baked in here:
 
   * **Order is cost-first.** Cheapest viable board at the top, which is also the default
     selection, because catering to cost is the point of supporting more than one board.
+
+Each entry is a `Board`. Two of its fields carry behaviour rather than prose:
+
+  * `bands` is what the board's radio can reach, and is what the Wi-Fi step uses to decide
+    which networks the box could join (core.scan_networks). Dual-band is the default;
+    only a 2.4 GHz-only board says otherwise.
+
+  * `conf` is extra `KEY=value` lines for /boot/riparr.conf. riparr.service loads that file
+    as its environment, so this is how a board tells the server something it needs at
+    runtime -- which SPI device the status LED hangs off, say -- without the user editing
+    anything over SSH. The Preparer writes them on every card-writing path (core.build_conf
+    for a FAT boot partition, armbian.provision for an ext4 root), so adding a setting for
+    a new board is one line here and nothing anywhere else.
 """
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Tuple
 
 # Armbian serves a durable per-board handle that always resolves to the *current* image,
 # so the registry stores a slug + release rather than a versioned URL that would rot:
@@ -42,74 +57,100 @@ RASPIOS_URL = "https://downloads.raspberrypi.com/raspios_lite_arm64_latest"
 RASPIOS_SHA = RASPIOS_URL + ".sha256"
 
 
-# `bands` is listed only for a board whose radio cannot do 5 GHz. Absent means 2.4 and
-# 5, which is every other board here; the Wi-Fi step greys out what the radio can't see.
+@dataclass(frozen=True)
+class Board:
+    id: str
+    name: str
+    soc: str
+    ram: str
+    tier: str                       # "verified" | "beta"
+    os: str                         # "armbian" | "raspios"
+    cost: str
+    note: str
+    armbian_slug: Optional[str] = None
+    ram_warn: Optional[str] = None
+    # What the radio can reach. Only a board that cannot do 5 GHz overrides this.
+    bands: Tuple[str, ...] = ("2.4", "5")
+    # Extra lines for /boot/riparr.conf -- see the module docstring. Keys carry their own
+    # RIPARR_ prefix; values must be one line.
+    conf: Dict[str, str] = field(default_factory=dict)
+
+    def as_ui(self):
+        """What the hardware dropdown displays -- no URL fields, and JSON-safe."""
+        d = {"id": self.id, "name": self.name, "soc": self.soc, "ram": self.ram,
+             "tier": self.tier, "os": self.os, "cost": self.cost, "note": self.note,
+             "bands": list(self.bands)}
+        if self.ram_warn:
+            d["ram_warn"] = self.ram_warn
+        return d
+
+
 BOARDS = [
-    {
-        "id": "orangepizero2w",
-        "name": "Orange Pi Zero 2W",
-        "soc": "Allwinner H618",
-        "ram": "1 – 4 GB",
-        "tier": "verified",
-        "os": "armbian",
-        "armbian_slug": "orangepizero2w",
-        "cost": "cheapest",
-        "note": "The reference board. This is the one Riparr is developed and tested on. "
-                "Its two USB-C sockets look identical but only one can host the drive "
-                "\u2014 if the drive is not found, swap the power and data cables over. "
-                "Riparr can also reconfigure the second socket so either one works.",
-    },
-    {
-        "id": "bananapim4zero",
-        "name": "Banana Pi BPI-M4 Zero",
-        "soc": "Allwinner H618",
-        "ram": "2 / 4 GB",
-        "tier": "beta",
-        "os": "armbian",
-        "armbian_slug": "bananapim4zero",
-        "cost": "budget",
-        "note": "Same H618 SoC as the Orange Pi, so the image and provisioning are the "
-                "same. Its USB-C and mini-HDMI sit in different places, so check the "
-                "enclosure's port cutouts.",
-    },
-    {
-        "id": "radxa-zero3",
-        "name": "Radxa Zero 3W / 3E",
-        "soc": "Rockchip RK3566",
-        "ram": "1 – 8 GB",
-        "tier": "beta",
-        "os": "armbian",
-        "armbian_slug": "radxa-zero3",
-        "cost": "mid",
-        "note": "One Armbian image covers both: the 3W has Wi-Fi 6, the 3E has Gigabit "
-                "Ethernet + PoE. Both add USB 3.0 -- a faster link to the drive.",
-    },
-    {
-        "id": "radxa-zero",
-        "name": "Radxa Zero",
-        "soc": "Amlogic S905Y2",
-        "ram": "1 – 4 GB",
-        "tier": "beta",
-        "os": "armbian",
-        "armbian_slug": "radxa-zero",
-        "cost": "mid",
-        "note": "Take a 2 GB or 4 GB model -- Wi-Fi is omitted on the 512 MB version.",
-    },
-    {
-        "id": "raspberrypizero2w",
-        "name": "Raspberry Pi Zero 2 W",
-        "soc": "Broadcom BCM2710A1",
-        "ram": "512 MB",
-        "tier": "beta",
-        "os": "raspios",
-        "ram_warn": "512 MB is the tight case for MakeMKV -- the build leans on zram and "
-                    "a real rip's peak memory is still unmeasured. It will work; it has "
-                    "the least headroom of any supported board.",
-        "cost": "budget",
-        "bands": ["2.4"],
-        "note": "The namesake, and a guaranteed mechanical fit. Boots Raspberry Pi OS "
-                "rather than Armbian. Its Wi-Fi is 2.4 GHz only.",
-    },
+    Board(
+        id="orangepizero2w",
+        name="Orange Pi Zero 2W",
+        soc="Allwinner H618",
+        ram="1 – 4 GB",
+        tier="verified",
+        os="armbian",
+        armbian_slug="orangepizero2w",
+        cost="cheapest",
+        note="The reference board. This is the one Riparr is developed and tested on. "
+             "Its two USB-C sockets look identical but only one can host the drive "
+             "\u2014 if the drive is not found, swap the power and data cables over. "
+             "Riparr can also reconfigure the second socket so either one works.",
+    ),
+    Board(
+        id="bananapim4zero",
+        name="Banana Pi BPI-M4 Zero",
+        soc="Allwinner H618",
+        ram="2 / 4 GB",
+        tier="beta",
+        os="armbian",
+        armbian_slug="bananapim4zero",
+        cost="budget",
+        note="Same H618 SoC as the Orange Pi, so the image and provisioning are the "
+             "same. Its USB-C and mini-HDMI sit in different places, so check the "
+             "enclosure's port cutouts.",
+    ),
+    Board(
+        id="radxa-zero3",
+        name="Radxa Zero 3W / 3E",
+        soc="Rockchip RK3566",
+        ram="1 – 8 GB",
+        tier="beta",
+        os="armbian",
+        armbian_slug="radxa-zero3",
+        cost="mid",
+        note="One Armbian image covers both: the 3W has Wi-Fi 6, the 3E has Gigabit "
+             "Ethernet + PoE. Both add USB 3.0 -- a faster link to the drive.",
+    ),
+    Board(
+        id="radxa-zero",
+        name="Radxa Zero",
+        soc="Amlogic S905Y2",
+        ram="1 – 4 GB",
+        tier="beta",
+        os="armbian",
+        armbian_slug="radxa-zero",
+        cost="mid",
+        note="Take a 2 GB or 4 GB model -- Wi-Fi is omitted on the 512 MB version.",
+    ),
+    Board(
+        id="raspberrypizero2w",
+        name="Raspberry Pi Zero 2 W",
+        soc="Broadcom BCM2710A1",
+        ram="512 MB",
+        tier="beta",
+        os="raspios",
+        ram_warn="512 MB is the tight case for MakeMKV -- the build leans on zram and "
+                 "a real rip's peak memory is still unmeasured. It will work; it has "
+                 "the least headroom of any supported board.",
+        cost="budget",
+        bands=("2.4",),
+        note="The namesake, and a guaranteed mechanical fit. Boots Raspberry Pi OS "
+             "rather than Armbian. Its Wi-Fi is 2.4 GHz only.",
+    ),
 
     # ── full-size Raspberry Pis ──
     #
@@ -123,67 +164,67 @@ BOARDS = [
     #
     # Power is the user's to sort out (micro-USB on the 3s, USB-C on the 4 and 5) and is
     # mentioned only where it can quietly stop a drive working.
-    {
-        "id": "raspberrypi3aplus",
-        "name": "Raspberry Pi 3 Model A+",
-        "soc": "Broadcom BCM2837B0",
-        "ram": "512 MB",
-        "tier": "beta",
-        "os": "raspios",
-        "cost": "budget",
-        "ram_warn": "512 MB is the tight case for MakeMKV, the same as the Zero 2 W. It "
-                    "will work; it has the least headroom of any supported board.",
-        "note": "Full-size A+ board, so it won't fit the Zero-sized enclosure. One USB-A "
-                "port for the drive and dual-band Wi-Fi.",
-    },
-    {
-        "id": "raspberrypi3b",
-        "name": "Raspberry Pi 3 Model B",
-        "soc": "Broadcom BCM2837",
-        "ram": "1 GB",
-        "tier": "beta",
-        "os": "raspios",
-        "cost": "budget",
-        "bands": ["2.4"],
-        "note": "Full-size board, so it won't fit the Zero-sized enclosure. Its Wi-Fi is "
-                "2.4 GHz only — or plug in Ethernet.",
-    },
-    {
-        "id": "raspberrypi3bplus",
-        "name": "Raspberry Pi 3 Model B+",
-        "soc": "Broadcom BCM2837B0",
-        "ram": "1 GB",
-        "tier": "beta",
-        "os": "raspios",
-        "cost": "budget",
-        "note": "Full-size board, so it won't fit the Zero-sized enclosure. Dual-band "
-                "Wi-Fi, and Ethernet if you'd rather plug it in.",
-    },
-    {
-        "id": "raspberrypi4",
-        "name": "Raspberry Pi 4 Model B / 400",
-        "soc": "Broadcom BCM2711",
-        "ram": "1 – 8 GB",
-        "tier": "beta",
-        "os": "raspios",
-        "cost": "mid",
-        "note": "Full-size board, so it won't fit the Zero-sized enclosure. Plug the drive "
-                "into a blue USB 3.0 port, and Gigabit Ethernet will beat Wi-Fi to your "
-                "library.",
-    },
-    {
-        "id": "raspberrypi5",
-        "name": "Raspberry Pi 5",
-        "soc": "Broadcom BCM2712",
-        "ram": "1 – 16 GB",
-        "tier": "beta",
-        "os": "raspios",
-        "cost": "mid",
-        "note": "Full-size board, so it won't fit the Zero-sized enclosure. On a power "
-                "supply under 5 A the Pi 5 limits its USB ports to 600 mA, which a "
-                "bus-powered drive can exceed — use the official 27 W supply or a "
-                "drive with its own power.",
-    },
+    Board(
+        id="raspberrypi3aplus",
+        name="Raspberry Pi 3 Model A+",
+        soc="Broadcom BCM2837B0",
+        ram="512 MB",
+        tier="beta",
+        os="raspios",
+        cost="budget",
+        ram_warn="512 MB is the tight case for MakeMKV, the same as the Zero 2 W. It "
+                 "will work; it has the least headroom of any supported board.",
+        note="Full-size A+ board, so it won't fit the Zero-sized enclosure. One USB-A "
+             "port for the drive and dual-band Wi-Fi.",
+    ),
+    Board(
+        id="raspberrypi3b",
+        name="Raspberry Pi 3 Model B",
+        soc="Broadcom BCM2837",
+        ram="1 GB",
+        tier="beta",
+        os="raspios",
+        cost="budget",
+        bands=("2.4",),
+        note="Full-size board, so it won't fit the Zero-sized enclosure. Its Wi-Fi is "
+             "2.4 GHz only — or plug in Ethernet.",
+    ),
+    Board(
+        id="raspberrypi3bplus",
+        name="Raspberry Pi 3 Model B+",
+        soc="Broadcom BCM2837B0",
+        ram="1 GB",
+        tier="beta",
+        os="raspios",
+        cost="budget",
+        note="Full-size board, so it won't fit the Zero-sized enclosure. Dual-band "
+             "Wi-Fi, and Ethernet if you'd rather plug it in.",
+    ),
+    Board(
+        id="raspberrypi4",
+        name="Raspberry Pi 4 Model B / 400",
+        soc="Broadcom BCM2711",
+        ram="1 – 8 GB",
+        tier="beta",
+        os="raspios",
+        cost="mid",
+        note="Full-size board, so it won't fit the Zero-sized enclosure. Plug the drive "
+             "into a blue USB 3.0 port, and Gigabit Ethernet will beat Wi-Fi to your "
+             "library.",
+    ),
+    Board(
+        id="raspberrypi5",
+        name="Raspberry Pi 5",
+        soc="Broadcom BCM2712",
+        ram="1 – 16 GB",
+        tier="beta",
+        os="raspios",
+        cost="mid",
+        note="Full-size board, so it won't fit the Zero-sized enclosure. On a power "
+             "supply under 5 A the Pi 5 limits its USB ports to 600 mA, which a "
+             "bus-powered drive can exceed — use the official 27 W supply or a "
+             "drive with its own power.",
+    ),
 
     # ── older full-size Armbian boards ──
     #
@@ -192,42 +233,56 @@ BOARDS = [
     # makemkv-bin ships an armhf makemkvcon beside the arm64 one and its Makefile picks
     # by `uname -m`, so makemkv-install.sh needs no special case. Armbian builds its
     # image as a community (CSC) board -- nobody at Armbian tests it either.
-    {
-        "id": "bananapro",
-        "name": "LeMaker Banana Pro",
-        "soc": "Allwinner A20",
-        "ram": "1 GB",
-        "tier": "beta",
-        "os": "armbian",
-        "armbian_slug": "bananapipro",
-        "cost": "mid",
-        "bands": ["2.4"],
-        "note": "A full-size board from 2014, so it won't fit the Zero-sized enclosure. "
-                "It is 32-bit; MakeMKV ships a 32-bit build, but its first-time compile "
-                "on two slow cores will take a good while. Two USB 2.0 ports for the "
-                "drive, and Gigabit Ethernet beats its 2.4 GHz-only Wi-Fi. Armbian "
-                "builds its image as a community board, so it is untested there too.",
-    },
+    Board(
+        id="bananapro",
+        name="LeMaker Banana Pro",
+        soc="Allwinner A20",
+        ram="1 GB",
+        tier="beta",
+        os="armbian",
+        armbian_slug="bananapipro",
+        cost="mid",
+        bands=("2.4",),
+        # SPI0 is the bus on its header (MOSI on pin 19); the server's default is the
+        # Orange Pi's SPI1. Needs `overlays=spi-spidev` and `param_spidev_spi_bus=0` in
+        # armbianEnv.txt as well -- see the troubleshooting guide.
+        conf={"RIPARR_LED_SPI": "/dev/spidev0.0"},
+        note="A full-size board from 2014, so it won't fit the Zero-sized enclosure. "
+             "It is 32-bit; MakeMKV ships a 32-bit build, but its first-time compile "
+             "on two slow cores will take a good while. Two USB 2.0 ports for the "
+             "drive, and Gigabit Ethernet beats its 2.4 GHz-only Wi-Fi. Armbian "
+             "builds its image as a community board, so it is untested there too.",
+    ),
 ]
 
 
 def all_boards():
-    """The list as the UI wants it -- no internal URL fields, just what it displays."""
-    fields = ("id", "name", "soc", "ram", "tier", "os", "cost", "note", "ram_warn",
-              "bands")
-    return [{k: b[k] for k in fields if k in b} for b in BOARDS]
+    """The list as the UI wants it -- plain dicts, because they cross into JavaScript."""
+    return [b.as_ui() for b in BOARDS]
 
 
 def get(board_id):
     for b in BOARDS:
-        if b["id"] == board_id:
+        if b.id == board_id:
             return b
     return None
 
 
 def default_id():
     """Cheapest viable board, which is the first in the list."""
-    return BOARDS[0]["id"]
+    return BOARDS[0].id
+
+
+def conf_lines(board_id):
+    """This board's extra riparr.conf lines, `KEY=value`, in a stable order.
+
+    Empty for no board or an unknown one: a card prepared without a board choice is
+    still a valid card, it just gets no board-specific settings.
+    """
+    b = get(board_id)
+    if not b:
+        return []
+    return ["%s=%s" % (k, v) for k, v in sorted(b.conf.items())]
 
 
 def image_source(board_id):
@@ -241,8 +296,8 @@ def image_source(board_id):
     b = get(board_id)
     if not b:
         return None
-    if b["os"] == "raspios":
+    if b.os == "raspios":
         return {"url": RASPIOS_URL, "sha_url": RASPIOS_SHA, "sha_kind": "sha256sum"}
-    slug = b["armbian_slug"]
+    slug = b.armbian_slug
     base = ARMBIAN_DL % (slug, ARMBIAN_RELEASE)
     return {"url": base, "sha_url": base + ".sha", "sha_kind": "sha256sum"}

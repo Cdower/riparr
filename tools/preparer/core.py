@@ -102,8 +102,7 @@ def build_conf(cfg):
     ]
     # Record which board this card was prepared for. Nothing on the box needs it to boot
     # -- provisioning is the same across Armbian boards -- but it makes a support question
-    # answerable ("what hardware is this?") without a guessing game, and gives any future
-    # board-specific behaviour something to key off.
+    # answerable ("what hardware is this?") without a guessing game.
     for key, value in (("RIPARR_BOARD", cfg.get("board")),
                        ("RIPARR_COUNTRY", cfg.get("country")),
                        ("RIPARR_TIMEZONE", cfg.get("timezone")),
@@ -114,16 +113,13 @@ def build_conf(cfg):
             lines.append("%s=%s" % (key, _conf_value(value)))
     if cfg.get("hidden"):
         lines.append("RIPARR_WIFI_HIDDEN=1")
+    # Whatever the board itself needs the server told -- the status LED's SPI device, for
+    # one. riparr.service loads this file as its environment, so each line is an env var.
+    # The lines are the board's `conf` in boards.py; this is the only place they are
+    # turned into text for a FAT boot partition (armbian.provision does it for ext4).
+    lines += [_conf_value(line) for line in boards.conf_lines(cfg.get("board"))]
     return "\n".join(lines) + "\n"
 
-
-# The Orange Pi Zero 2W has dual-band WiFi 5 (2.4 + 5 GHz), so both are offered.
-#
-# This was {"2.4"} while the board was believed to be a Raspberry Pi Zero 2 W, whose
-# radio genuinely is single-band -- correct then, wrong now. 5 GHz matters here beyond
-# convenience: upload rate is the binding constraint in the D11 streaming design, so
-# the faster band directly raises how many discs an hour the box can clear.
-PI_BANDS = {"2.4", "5"}
 
 # Removable-media guard rails.
 #
@@ -173,23 +169,27 @@ UHD100_GIB = 93.1
 # Windows. What stays is the part that is true regardless of which machine is asking:
 # whether the *board's* radio can reach a network, and how a passphrase becomes a PSK.
 
-def pi_can_join(net):
-    """Can the board's radio reach this network?
+def pi_can_join(net, bands):
+    """Can a radio that reaches `bands` join this network?
 
-    The Orange Pi Zero 2W is dual-band, so 5 GHz networks are now perfectly reachable
-    and are offered. 6 GHz is not -- this is WiFi 5, not 6E. Unknown band is allowed
-    through and warned about rather than hidden.
+    `bands` is the chosen board's (boards.Board.bands). A 2.4 GHz-only board cannot see
+    a 5 GHz-only network, and no board here does 6 GHz. 5 GHz matters beyond
+    convenience: upload rate is the binding constraint in the D11 streaming design, so
+    the faster band directly raises how many discs an hour the box can clear. Unknown
+    band is allowed through and warned about rather than hidden.
     """
-    return (not net["bands"]) or bool(PI_BANDS & set(net["bands"]))
+    return (not net["bands"]) or bool(set(bands) & set(net["bands"]))
 
 
-def scan_networks():
+def scan_networks(board_id=None):
     """Returns (networks, method). Never raises; an empty list is a valid answer.
 
     hostos gathers, this decides: `pi_ok` is a fact about the appliance's radio, not
     about the machine running the Preparer, so it is applied here and applies equally
-    on all three platforms.
+    on all three platforms. Which radio is the chosen board's; no board, or one this
+    registry does not know, means the default board's.
     """
+    board = boards.get(board_id) or boards.get(boards.default_id())
     try:
         nets, method = hostos.scan_wifi()
     except Exception:
@@ -198,7 +198,7 @@ def scan_networks():
         n.setdefault("bands", [])
         n.setdefault("rssi", None)
         n.setdefault("secure", True)
-        n["pi_ok"] = pi_can_join(n)
+        n["pi_ok"] = pi_can_join(n, board.bands)
     nets.sort(key=lambda n: (not n["pi_ok"], n["rssi"] is None,
                              -(n["rssi"] or -100), (n.get("ssid") or "").lower()))
     return nets, (method or "none")
@@ -752,10 +752,10 @@ def image_for_board(assets, board_id):
     b = boards.get(board_id)
     if not b:
         return None
-    if b["os"] == "raspios":
+    if b.os == "raspios":
         needles = ["raspios"]
     else:
-        needles = [b["armbian_slug"].replace("-", ""), b["id"].replace("-", "")]
+        needles = [b.armbian_slug.replace("-", ""), b.id.replace("-", "")]
     for img in find_images(assets):
         stem = img["name"].lower().replace("-", "").replace("_", "")
         if any(n in stem for n in needles):

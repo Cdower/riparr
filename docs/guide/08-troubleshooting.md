@@ -254,7 +254,9 @@ cp -p /boot/armbianEnv.txt /boot/armbianEnv.txt.bak-led
 echo "overlays=spi-spidev"      >> /boot/armbianEnv.txt
 echo "param_spidev_spi_bus=0"   >> /boot/armbianEnv.txt
 
-# 2. Tell Riparr where the LED is. The service reads this file at start.
+# 2. Tell Riparr where the LED is. The service reads this file at start. A card the
+#    Preparer wrote for a Banana Pro already has this line (from boards.py), so this
+#    step is only for a card written before it did -- check with `grep LED /boot/riparr.conf`.
 echo "RIPARR_LED_SPI=/dev/spidev0.0" >> /boot/riparr.conf
 
 # 3. Let the riparr user open it.
@@ -393,7 +395,8 @@ order, the LED is RGB rather than GRB.
 To find the right bus on another board, `ls /sys/class/spi_master/` lists the
 controllers that are enabled. `/boot/dtb/overlay/README.*-overlays` names the header pins
 for each bus. Set `param_spidev_spi_bus` to the bus your LED is wired to, and point
-`RIPARR_LED_SPI` at `/dev/spidev<bus>.0`.
+`RIPARR_LED_SPI` at `/dev/spidev<bus>.0`. Once it works, that line belongs in the board's
+`conf` in `tools/preparer/boards.py`, so the Preparer writes it for everyone after you.
 
 ## Adding a power button
 

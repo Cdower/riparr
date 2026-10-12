@@ -325,15 +325,11 @@ async function downloadOS() {
 
 /* ── step 2: wi-fi ──────────────────────────────────────── */
 
-/* Whether the *chosen* board's radio can see this network. `pi_ok` from the scan says
-   the network is on a band some supported board can use; a 2.4 GHz-only board (the
-   Zero 2 W, the Pi 3 Model B) also has to rule out 5 GHz-only networks, or the card is
-   written for a network the box will never find. Unknown band stays allowed. */
+/* Whether the chosen board's radio can see this network. The scan is asked for with
+   the board (core.scan_networks), so `pi_ok` already accounts for a 2.4 GHz-only board
+   (the Zero 2 W, the Pi 3 Model B) -- the rule lives in one place, in core.py. */
 function canJoin(n) {
-  if (!n.pi_ok) return false;
-  const b = boardById(state.board);
-  if (!b || !b.bands || !n.bands || !n.bands.length) return true;
-  return n.bands.some(x => b.bands.includes(x));
+  return !!n.pi_ok;
 }
 
 function netItem(n, i) {
@@ -474,7 +470,7 @@ function paintWifi(r) {
 
 async function loadWifi() {
   $("#wifi-list").innerHTML = `<div class="empty">Scanning…</div>`;
-  paintWifi(await riparr.scan_wifi());
+  paintWifi(await riparr.scan_wifi(state.board));
 }
 
 async function enableWifiDetail() {
@@ -482,7 +478,7 @@ async function enableWifiDetail() {
   if (btn) { btn.disabled = true; btn.textContent = "Waiting for permission…"; }
   $("#wifi-list").innerHTML = `<div class="empty">Scanning…</div>`;
   let r;
-  try { r = await riparr.enable_wifi_detail(); }
+  try { r = await riparr.enable_wifi_detail(state.board); }
   catch (e) { r = null; }
   if (btn) { btn.disabled = false; btn.textContent = "Enable band detection"; }
   if (r) paintWifi(r); else { loadWifi(); return; }

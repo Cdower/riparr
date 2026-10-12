@@ -72,13 +72,12 @@ hand. It still works and is still the macOS reference, but `shell.py` is what sh
 
 **It knows which bands the board can actually reach.** A live CoreWLAN scan gives SSID,
 band and signal for every nearby network, and anything the radio cannot join is listed
-greyed out with the reason inline rather than silently offered. The board is an Orange Pi
-Zero 2W — dual-band WiFi 5 — so 2.4 and 5 GHz are both offered and 5 GHz is preferred,
-because upload is the binding constraint in the streaming design. Only 6 GHz is refused.
-
-> Earlier versions of this file said the board was 2.4 GHz only and that 5 GHz could not
-> be selected. That was true while the hardware was believed to be a Raspberry Pi Zero
-> 2 W, whose radio genuinely is single-band. See `PI_BANDS` in `core.py`.
+greyed out with the reason inline rather than silently offered. Which bands those are
+comes from the board chosen on the first screen (`bands` on each entry in `boards.py`):
+the Orange Pi Zero 2W and most others are dual-band, so 2.4 and 5 GHz are both offered
+and 5 GHz is preferred, because upload is the binding constraint in the streaming design.
+A 2.4 GHz-only board — the Pi Zero 2 W, the Pi 3 Model B, the Banana Pro — cannot be
+pointed at a 5 GHz-only network. No board here does 6 GHz.
 
 **It can take the Wi-Fi password out of your keychain.** A mistyped passphrase is the
 most expensive mistake this tool allows: nothing detects it, the card writes perfectly,
