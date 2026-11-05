@@ -46,6 +46,7 @@ EOF
 printf '#!/bin/sh\nexit 1\n' > "$BIN/mountpoint"
 printf '#!/bin/sh\nexit 0\n' > "$BIN/ldconfig"
 printf '#!/bin/sh\nexit 0\n' > "$BIN/rfkill"
+printf '#!/bin/sh\nexit 0\n' > "$BIN/systemd-tmpfiles"
 chmod +x "$BIN"/*
 export PATH="$BIN:$PATH"
 

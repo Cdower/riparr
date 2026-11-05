@@ -1088,7 +1088,7 @@ REQUEST = os.path.join(RUNDIR, "cdtools.request")
 # Asks for ffmpeg as well. Its existence is the whole message: the root side reads
 # nothing from it, it only decides whether one more fixed Debian package is installed.
 FFMPEG_REQUEST = os.path.join(RUNDIR, "cdtools-ffmpeg.request")
-STATE = "cdtools.state"         # root's answer, read via platform.status_path
+STATE = "cdtools.state"         # root's answer, read via platform.read_status
 BRIDGE_UNIT = "/etc/systemd/system/riparr-cdtools.path"
 
 
@@ -1120,11 +1120,7 @@ def ready(fmt="flac", data=False):
 
 
 def _read_state():
-    try:
-        with open(P.status_path(STATE)) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return None
+    return P.read_status(STATE)
 
 
 def installing():

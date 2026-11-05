@@ -12,12 +12,9 @@
 # the trap stops existing.
 set -uo pipefail
 
-# Progress and results go to a directory that is root's, never into /run/riparr: that
-# one is the service's, and a root helper writing into it could be made to write
-# through a symlink the service planted. The service reads this; it cannot write it.
-STATUS_DIR="${RIPARR_STATUS_DIR:-/run/riparr-status}"
+# shellcheck source=packaging/status-lib.sh
+. "$(dirname "$0")/status-lib.sh"
 STATE="$STATUS_DIR/usbhost.state"
-install -d -o root -g root -m 0755 "$STATUS_DIR"
 
 say() {   # phase, message
   printf '{"phase":"%s","message":%s}\n' "$1" \

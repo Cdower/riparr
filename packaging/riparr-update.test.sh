@@ -76,7 +76,7 @@ PY
   fi
   ( cd "$REL/$tag" && sha256sum riparr-server.tar.gz > SHA256SUMS.txt )
   if [ "$kind" = bad ]; then
-    sed -i 's/^./0/' "$REL/$tag/SHA256SUMS.txt"
+    sed -i 's/^./x/' "$REL/$tag/SHA256SUMS.txt"   # x: never a hex digit, so never a no-op
   fi
 }
 

@@ -19,10 +19,8 @@
 # Idempotent: anything already installed is left alone, so a second request is cheap.
 set -uo pipefail
 
-# Progress and results go to a directory that is root's, never into /run/riparr: that
-# one is the service's, and a root helper writing into it could be made to write
-# through a symlink the service planted. The service reads this; it cannot write it.
-STATUS_DIR="${RIPARR_STATUS_DIR:-/run/riparr-status}"
+# shellcheck source=packaging/status-lib.sh
+. "$(dirname "$0")/status-lib.sh"
 STATE="$STATUS_DIR/dvdtools.state"
 LOG="$STATUS_DIR/dvdtools.log"
 
@@ -32,8 +30,6 @@ LOG="$STATUS_DIR/dvdtools.log"
 DVDCSS_VERSION=1.6.0
 DVDCSS_SHA256=7ea556c846b7bfc32d47b41cae56d1863a6b6d5f706bb162778d6f298490977c
 DVDCSS_URL="https://download.videolan.org/pub/videolan/libdvdcss/$DVDCSS_VERSION/libdvdcss-$DVDCSS_VERSION.tar.xz"
-
-install -d -o root -g root -m 0755 "$STATUS_DIR"
 
 # shellcheck source=packaging/staged-install.sh
 . "$(dirname "$0")/staged-install.sh"

@@ -14,12 +14,12 @@ What is asserted here, on the service side:
   1. the request file carries the tag and nothing else, and a tag that is not a
      version is never written
   2. install() refuses on a box without the door and says what to do
-  3. install() waits for the root side and reports what it said -- done, error, or
-     still running -- never a success it did not see
-  4. an older run's state file is not mistaken for this one's answer
-  5. the checksum file is found by the release's own asset URL, never built from a
-     component version (the bug that compared one release's numbers to another's
-     download; the root side now does the comparing, the service still finds the URL)
+  3. install() places the request and comes straight back with the box's own clock
+     reading, which is what the page compares root's answer against
+  4. the page reads root's answer from the root-owned status directory, and a mangled
+     file reads as nothing rather than a crash
+  5. the Preparer finds the checksums by the release's own asset URL, never by building
+     a path from a component version
 """
 import json
 import os
@@ -116,47 +116,30 @@ check("refuses", not r.get("ok"), str(r))
 check("names the installer", "install.sh" in (r.get("detail") or ""), str(r))
 check("nothing was requested", request_text() is None)
 
-print("the answer is what root said")
+print("install() asks and comes straight back")
 door(); clear()
-t = root_says("done", delay=0.3, message="Updated to 9.9.9. Riparr is restarting.",
-              provenance="bound")
-r = U.install(timeout=5, poll=0.1)
-t.join()
-check("done is a success", r.get("ok") is True, str(r))
+before = int(time.time())
+r = U.install()
+check("it is a pending success", r.get("ok") is True and r.get("pending") is True, str(r))
 check("with the version", r.get("version") == "9.9.9", str(r))
 check("the request was placed", request_text() == "v9.9.9\n", repr(request_text()))
-check("the restart is reported as a restart", r.get("restarted") == "restart", str(r))
-check("needs_restart is false", r.get("needs_restart") is False, str(r))
-check("provenance is passed through", r.get("provenance") == "bound", str(r))
+check("and it says when, by the box's clock, for the page to compare against",
+      isinstance(r.get("started"), int) and r["started"] >= before, str(r))
 
+print("the page reads root's answer from the status directory")
 door(); clear()
-t = root_says("error", delay=0.3, message="The download did not match its published "
-              "checksum. Nothing was changed.", detail="expected 0000, got ffff")
-r = U.install(timeout=5, poll=0.1)
-t.join()
-check("error is a failure", r.get("ok") is False, str(r))
-check("with root's message", "checksum" in r.get("message", ""), str(r))
-check("and root's detail", r.get("detail") == "expected 0000, got ffff", str(r))
-
-door(); clear()
-r = U.install(timeout=0.5, poll=0.1)
-check("no answer in time is not a success", r.get("ok") is False, str(r))
-check("but is marked pending", r.get("pending") is True, str(r))
-
-print("an older run's state is not this run's answer")
-door(); clear()
-with open(os.path.join(STATUS, "update.state"), "w") as f:
-    json.dump({"phase": "done", "message": "Updated to 1.0.0.", "version": "1.0.0",
-               "at": int(time.time()) - 60}, f)
-r = U.install(timeout=0.5, poll=0.1)
-check("a stale done is ignored", r.get("ok") is False and r.get("pending") is True, str(r))
-
-print("install_state reads root's file")
-door(); clear()
-check("none before root has spoken", U.install_state() is None)
+check("none before root has spoken", P.update_state() is None)
 root_says("downloading", message="Downloading").join()
-st = U.install_state()
+st = P.update_state()
 check("then root's phase", st and st.get("phase") == "downloading", str(st))
+root_says("done", message="Updated to 9.9.9. Riparr is restarting.", provenance="bound").join()
+st = P.update_state()
+check("then done, with the version and the provenance level",
+      (st.get("phase"), st.get("version"), st.get("provenance")) == ("done", "9.9.9", "bound"), str(st))
+check("stamped by the box's clock", st.get("at", 0) >= before, str(st))
+with open(os.path.join(STATUS, "update.state"), "w") as f:
+    f.write("not json")
+check("a mangled file reads as nothing, not a crash", P.update_state() is None)
 
 print("not on the appliance, nothing is requested")
 door(); clear()
@@ -166,16 +149,13 @@ check("refuses", not r.get("ok"), str(r))
 check("nothing was requested", request_text() is None)
 P.IS_APPLIANCE = True
 
-# ── the checksum file comes from *this* release ──
+# ── the Preparer's checksum lookup ──
 #
-# The tag and a component version stopped being the same string when the two halves
-# began versioning apart. Both updaters built the checksums URL out of a version, so on
-# a release tagged v0.2.3 the Preparer asked for v0.1.21's checksums (404 -> "publishes
-# no checksum") and the appliance asked for v0.2.2's (a real file, the wrong numbers ->
-# "the download did not match its published checksum"). The service no longer
-# compares anything -- root does, from the tag -- but check() still reports the sums
-# URL, and the Preparer still uses its own copy of this logic.
-print("the checksums come from the release being installed")
+# The appliance no longer compares checksums in Python (root does, from the tag), but
+# the Preparer still verifies its own downloads, and it used to build the checksums
+# URL out of a component version: on a release tagged v0.2.3 it asked for v0.1.21's
+# file (404 -> "publishes no checksum"). It reads the asset URL now.
+print("the Preparer finds the checksums by the release's own asset URL")
 
 SUMS = "deadbeef" * 8 + "  riparr-server.tar.gz\n" + ("cafe" * 16) + "  x.dmg\n"
 RIGHT = "https://example.invalid/v0.2.3/SHA256SUMS.txt"
@@ -197,22 +177,6 @@ def _only(expected_url):
         return _Resp(SUMS)
     return fake
 
-
-assets_json = [{"name": "riparr-server.tar.gz", "browser_download_url": "u"},
-               {"name": "SHA256SUMS.txt", "browser_download_url": RIGHT}]
-check("the appliance finds the sums asset by name", U._sums_url(assets_json) == RIGHT,
-      str(U._sums_url(assets_json)))
-
-import urllib.request as _ur   # noqa: E402
-_saved = _ur.urlopen
-try:
-    _ur.urlopen = _only(RIGHT)
-    got = U._expected_hash("riparr-server.tar.gz", U._sums_url(assets_json), "r/r", "0.2.3")
-    check("the appliance reads it from that URL", got == "deadbeef" * 8, str(got))
-    stray = U._expected_hash("riparr-server.tar.gz", None, "r/r", "0.2.2")
-    check("no component version is used as a release path", stray is None, str(stray))
-finally:
-    _ur.urlopen = _saved
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "tools", "preparer"))

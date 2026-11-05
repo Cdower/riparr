@@ -653,6 +653,17 @@ POWER_ACTIONS = {"reboot", "poweroff"}
 POWER_REQUEST = "/run/riparr/%s.request"
 
 
+def env_flag(name, default):
+    """A yes/no setting from riparr.conf. "0", "no", "false" and "off" are off; an
+    empty value is the default; anything else is on. One truth table for every switch
+    the box reads, so RIPARR_ALLOW_POWER=off and RIPARR_COOKIE_SECURE=off mean the same
+    thing."""
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in ("0", "no", "false", "off")
+
+
 def power_allowed():
     """Whether this box lets the web page restart or shut it down.
 
@@ -662,7 +673,7 @@ def power_allowed():
     (packaging/power-allowed.sh), so this is the polite refusal and that is the real
     one. tools/install.sh in host mode sets it to 0.
     """
-    return os.environ.get("RIPARR_ALLOW_POWER", "1") not in ("0", "no", "false", "off")
+    return env_flag("RIPARR_ALLOW_POWER", True)
 
 
 def power_available():
@@ -696,7 +707,7 @@ RESTART_UNIT = "/etc/systemd/system/riparr-restart.path"
 
 
 def restart_available():
-    return os.path.exists(RESTART_UNIT) and os.access(RUN_DIR, os.W_OK)
+    return door_available(RESTART_UNIT)
 
 
 def request_service_restart():
@@ -725,8 +736,7 @@ USBHOST_REQUEST = "/run/riparr/usbhost.request"
 
 
 def usb_host_available():
-    return (os.path.exists("/etc/systemd/system/riparr-usbhost.path")
-            and os.access("/run/riparr", os.W_OK))
+    return door_available("/etc/systemd/system/riparr-usbhost.path")
 
 
 def usb_host_fix():
@@ -1284,15 +1294,29 @@ WIFI_UNIT = "/etc/systemd/system/riparr-wifi.path"
 STATUS_DIR = os.environ.get("RIPARR_STATUS_DIR", "/run/riparr-status")
 
 
-def status_path(name):
-    """Where a root helper's `name` (makemkv.state, wifi.state, ...) is right now."""
-    new = os.path.join(STATUS_DIR, name)
-    if os.path.exists(new):
-        return new
-    old = os.path.join(RUN_DIR, name)
-    if os.path.exists(old):
-        return old
-    return new
+def read_status(name, as_json=True):
+    """What root last wrote as `name` (makemkv.state, wifi.state, ...), or None.
+
+    One open on the happy path: the root-owned directory first, then the legacy
+    location for the window between an update landing and the helpers that wrote the
+    old place being replaced (remove the fallback once no supported release predates
+    0.8). `as_json=False` returns the text, for the build logs.
+    """
+    for d in (STATUS_DIR, RUN_DIR):
+        try:
+            with open(os.path.join(d, name)) as f:
+                return json.load(f) if as_json else f.read()
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def door_available(unit):
+    """Can this process ring a one-way door? Its path unit is installed and the
+    runtime directory the request goes into is writable."""
+    return os.path.exists(unit) and os.path.isdir(RUN_DIR) and os.access(RUN_DIR, os.W_OK)
 
 
 # ── what should be installed outside /opt/riparr, and whether it is ──
@@ -1425,8 +1449,7 @@ def remount_bridge_available():
     Same one-way door as the rest. Mounting needs privileges this service does not have
     and must never be given, so the whole interface is one empty file.
     """
-    return os.path.exists(REMOUNT_UNIT) and os.path.isdir(RUN_DIR) and os.access(
-        RUN_DIR, os.W_OK)
+    return door_available(REMOUNT_UNIT)
 
 
 def request_remount():
@@ -1466,8 +1489,7 @@ def provision_bridge_available():
     root-side update helper put it there after checking the release's checksum and
     provenance -- and apply-system.sh refuses anything in it that is not.
     """
-    return os.path.exists(PROVISION_UNIT) and os.path.isdir(RUN_DIR) and os.access(
-        RUN_DIR, os.W_OK)
+    return door_available(PROVISION_UNIT)
 
 
 def request_provision():
@@ -1504,8 +1526,7 @@ def update_door_available():
     names a release tag and the root side (packaging/riparr-update.sh) fetches,
     verifies, unpacks and installs it into a tree this account can only read.
     """
-    return os.path.exists(UPDATE_UNIT) and os.path.isdir(RUN_DIR) and os.access(
-        RUN_DIR, os.W_OK)
+    return door_available(UPDATE_UNIT)
 
 
 def request_update(tag):
@@ -1530,11 +1551,7 @@ def request_update(tag):
 
 def update_state():
     """What the root side said about the last update, or None if it never ran."""
-    try:
-        with open(status_path("update.state")) as f:
-            st = json.load(f)
-    except (OSError, ValueError):
-        return None
+    st = read_status("update.state")
     return st if isinstance(st, dict) and "phase" in st else None
 
 
@@ -1547,8 +1564,7 @@ def wifi_bridge_available():
     nothing in it to trust -- the root side reads the network list from the database,
     which only this service can write, and only behind authentication.
     """
-    return os.path.exists(WIFI_UNIT) and os.path.isdir(RUN_DIR) and os.access(
-        RUN_DIR, os.W_OK)
+    return door_available(WIFI_UNIT)
 
 
 # Off the appliance there is no wpa_supplicant to reload, so the mock walks the same
@@ -1604,11 +1620,7 @@ def wifi_adopt():
     from . import db
     if MOCK:
         return False
-    try:
-        with open(status_path(WIFI_MERGED)) as f:
-            merged = json.load(f)
-    except (OSError, ValueError):
-        return False
+    merged = read_status(WIFI_MERGED)
     if not isinstance(merged, list):
         return False
     have = db.get("wifi_networks") or []
@@ -1627,11 +1639,7 @@ def wifi_apply_state():
     """What the root side said about the last apply, or None if it has not run."""
     if MOCK:
         return _MOCK_WIFI["state"]
-    try:
-        with open(status_path("wifi.state")) as f:
-            st = json.load(f)
-    except (OSError, ValueError):
-        return None
+    st = read_status("wifi.state")
     return st if isinstance(st, dict) else None
 
 

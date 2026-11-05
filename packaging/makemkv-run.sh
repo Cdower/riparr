@@ -14,15 +14,11 @@
 # install.sh puts it in /usr/local/lib/riparr/ as root:root 0755.
 set -uo pipefail
 
-# Progress and results go to a directory that is root's, never into /run/riparr: that
-# one is the service's, and a root helper writing into it could be made to write
-# through a symlink the service planted. The service reads this; it cannot write it.
-STATUS_DIR="${RIPARR_STATUS_DIR:-/run/riparr-status}"
+# shellcheck source=packaging/status-lib.sh
+. "$(dirname "$0")/status-lib.sh"
 STATE="$STATUS_DIR/makemkv.state"
 LOG="$STATUS_DIR/makemkv.log"
 SCRIPT=/usr/local/lib/riparr/makemkv-install.sh
-
-install -d -o root -g root -m 0755 "$STATUS_DIR"
 
 # The web service polls these. World-readable on purpose: they carry progress, not
 # secrets, and the reader is an unprivileged process.

@@ -37,7 +37,10 @@ def check(name, got, want):
 
 
 def request(method, path, headers=None, body=b"", chunks=None, content_length=None):
-    """(status, headers dict, body bytes) for one request through the whole app."""
+    """(status, headers dict, body bytes) for one request through the whole app.
+
+    The dict keeps the first value of each header; every Set-Cookie line is also kept
+    under "set-cookies", because a login sets two."""
     hdrs = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
     if body and content_length is None:
         content_length = len(body)
@@ -65,19 +68,12 @@ def request(method, path, headers=None, body=b"", chunks=None, content_length=No
             out["body"] += msg.get("body", b"")
 
     asyncio.run(app(scope, receive, send))
-    h = {}
+    h = {"set-cookies": []}
     for k, v in out["headers"]:
         h.setdefault(k, v)
+        if k == "set-cookie":
+            h["set-cookies"].append(v)
     return out["status"], h, out["body"]
-
-
-def cookies_of(headers_list_body):
-    return headers_list_body
-
-
-def set_cookies(status_headers):
-    """Every Set-Cookie header from a raw response, as a dict of name -> full line."""
-    return status_headers
 
 
 def json_of(body):
@@ -180,37 +176,7 @@ check("a login with the wrong token is refused", st, 401)
 main._login_succeeded()                       # no delay for the rest of the test
 st, h, _ = request("POST", "/api/auth/login", SAME, b'{"username": "admin", "password": "password1", "token": "s3cret-token"}')
 check("a login with the token works", st, 200)
-# Two Set-Cookie headers: the session and the gate. The driver keeps the first of each
-# name, so read them all from the raw list.
-raw = h
-st, h2, _ = request("POST", "/api/auth/login", SAME, b'{"username": "admin", "password": "password1", "token": "s3cret-token"}')
-# Rebuild from a fresh request to capture both cookies.
-scope_cookies = {}
-
-
-def all_set_cookies():
-    hdrs = [("content-type", "application/json"), ("x-riparr-request", "1"),
-            ("origin", "http://riparr.local:9797"), ("host", "riparr.local:9797")]
-    body = b'{"username": "admin", "password": "password1", "token": "s3cret-token"}'
-    hdrs.append(("content-length", str(len(body))))
-    scope = {"type": "http", "http_version": "1.1", "method": "POST", "scheme": "http",
-             "path": "/api/auth/login", "raw_path": b"/api/auth/login", "query_string": b"",
-             "headers": [(k.encode(), v.encode()) for k, v in hdrs],
-             "server": ("127.0.0.1", 9797), "client": ("127.0.0.1", 1)}
-    out = []
-
-    async def receive():
-        return {"type": "http.request", "body": body, "more_body": False}
-
-    async def send(msg):
-        if msg["type"] == "http.response.start":
-            out.extend(v.decode() for k, v in msg["headers"] if k == b"set-cookie")
-    asyncio.run(app(scope, receive, send))
-    return out
-
-
-cookies = all_set_cookies()
-gate = [c for c in cookies if c.startswith(WEB.GATE_COOKIE + "=")]
+gate = [c for c in h["set-cookies"] if c.startswith(WEB.GATE_COOKIE + "=")]
 check("the login sets a gate cookie", len(gate), 1)
 check("the gate cookie is HttpOnly", "HttpOnly" in gate[0], True)
 gate_value = gate[0].split(";")[0]
@@ -221,6 +187,13 @@ check("a forged gate cookie does not", st, 401)
 main._rotate_secret()
 st, _, _ = request("GET", "/api/status", {"Cookie": cookie_value + "; " + gate_value})
 check("a password change (secret rotation) revokes the gate cookie too", st, 401)
+main._login_succeeded()
+db.clear_users()
+st, _, _ = request("POST", "/api/setup/user", SAME, b'{"username": "x", "password": "password1", "token": "wrong"}')
+check("first-run account creation needs the token too", st, 401)
+check("and a wrong guess counts against the login throttle", main._login_delay() > 0, True)
+main._login_succeeded()
+db.create_user("admin", "password1")
 del os.environ["RIPARR_AUTH_TOKEN"]
 check("gate removed: back to sessions", request("GET", "/api/auth/me")[0], 200)
 

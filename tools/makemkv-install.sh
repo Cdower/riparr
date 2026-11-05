@@ -136,8 +136,8 @@ obtain_tarballs() {
     local want dest got
     want=$(printf '%s\n' "$rows" | awk -F'\t' -v n="$name" '$1==n{print $2; exit}')
     dest="$BUILD/$name"
-    if [ -s "$SRC/$name" ] && [ "$(sha_of "$SRC/$name")" = "$want" ]; then
-      # Copied, then hashed again: the copy is what gets unpacked, and a file in a
+    if [ -s "$SRC/$name" ]; then
+      # Copied first, hashed once: the copy is what gets unpacked, and a file in a
       # directory somebody else can write may not be the same file twice.
       cp -- "$SRC/$name" "$dest"
       if [ "$(sha_of "$dest")" = "$want" ]; then
@@ -181,24 +181,11 @@ echo "Extracting tarballs in $BUILD"
 mkdir -p "$BUILD/src"
 for f in "$BUILD"/makemkv-*-"$WANT".tar.gz; do
   [ -s "$f" ] || { echo "$(basename "$f") is empty -- download it again"; exit 2; }
-  # Nothing in the tarball may land outside src/; a device node or an absolute
-  # name is a reason to stop, not something to tidy.
-  python3 - "$f" "$BUILD/src" <<'PYEOF' || { echo "Could not unpack $(basename "$f") safely"; exit 2; }
-import os, sys, tarfile
-archive, dest = sys.argv[1], sys.argv[2]
-base = os.path.realpath(dest)
-with tarfile.open(archive) as t:
-    for m in t.getmembers():
-        target = os.path.realpath(os.path.join(dest, m.name))
-        if target != base and not target.startswith(base + os.sep):
-            raise SystemExit("unsafe path in archive: %s" % m.name)
-        if m.isdev():
-            raise SystemExit("device node in archive: %s" % m.name)
-    if hasattr(tarfile, "data_filter"):
-        t.extractall(dest, filter="data")
-    else:
-        t.extractall(dest)
-PYEOF
+  # Nothing in the tarball may land outside src/; a device node, a link out or an
+  # absolute name is a reason to stop, not something to tidy (packaging/safe-untar.py,
+  # shared with the release updater).
+  python3 -I "$LIBDIR/safe-untar.py" "$f" "$BUILD/src" \
+    || { echo "Could not unpack $(basename "$f") safely"; exit 2; }
 done
 OSS="$BUILD/src/makemkv-oss-$WANT"
 BIN="$BUILD/src/makemkv-bin-$WANT"
@@ -254,7 +241,10 @@ TIME=""
 [ -x /usr/bin/time ] && TIME="/usr/bin/time -v"
 # stderr carries both the timing report and any compiler errors, which is what makes
 # this file worth printing on failure.
-$TIME runuser -u "$BUILD_USER" -- env HOME="$BUILD" make -C "$OSS" -j"$JOBS" 2> "$LOG/makemkv-oss-build.time" || {
+# Spelled out rather than through as_build_user, because /usr/bin/time has to wrap the
+# make itself to measure it; the environment is the one as_build_user sets.
+$TIME runuser -u "$BUILD_USER" -- env HOME="$BUILD" PATH="/usr/local/bin:/usr/bin:/bin" \
+  make -C "$OSS" -j"$JOBS" 2> "$LOG/makemkv-oss-build.time" || {
     echo "BUILD FAILED — last lines of $LOG/makemkv-oss-build.time:"
     tail -25 "$LOG/makemkv-oss-build.time" | sed 's/^/    /'
     grep -iE "maximum resident|Elapsed" "$LOG/makemkv-oss-build.time" || true

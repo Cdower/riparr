@@ -288,7 +288,7 @@ choose_iface() {
 }
 
 main() {
-    local fails=0 did_assoc=0 did_reload=0 deferred=0 action
+    local fails=0 did_assoc=0 did_reload=0 deferred=0 reclaimed=0 action
 
     choose_iface || exit 0
 
@@ -323,8 +323,15 @@ main() {
             if [ "$fails" -gt 0 ]; then
                 log "$IFACE answered again after $fails failed probe(s)."
             fi
+            # The name is taken back once the network is first seen working after a
+            # start (a box that renamed itself coming up after a crash) and once per
+            # recovery -- not on every probe, which was an avahi-resolve fork a minute
+            # for the life of the box and a ten-second stall each when avahi was slow.
+            if [ "$fails" -gt 0 ] || [ "$reclaimed" = 0 ]; then
+                reclaim_name
+                reclaimed=1
+            fi
             fails=0; did_assoc=0; did_reload=0; deferred=0
-            reclaim_name
             continue
         fi
 

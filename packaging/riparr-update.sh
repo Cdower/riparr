@@ -43,7 +43,9 @@ set -uo pipefail
 
 ROOT="${RIPARR_INSTALL_DIR:-/opt/riparr}"
 LIB="${RIPARR_LIB_DIR:-/usr/local/lib/riparr}"
-STATUS_DIR="${RIPARR_STATUS_DIR:-/run/riparr-status}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=packaging/status-lib.sh
+. "$HERE/status-lib.sh"
 STATE="$STATUS_DIR/update.state"
 REPO="${RIPARR_REPO:-jackharvest/riparr}"
 BASE="${RIPARR_RELEASE_BASE:-https://github.com/$REPO/releases/download}"
@@ -56,10 +58,6 @@ REQUIRE_PROVENANCE="${RIPARR_UPDATE_REQUIRE_PROVENANCE:-0}"
 export PIP_CACHE_DIR="${RIPARR_PIP_CACHE:-/var/cache/riparr/pip}"
 
 [ "$(id -u)" = 0 ] || { echo "riparr-update.sh must run as root" >&2; exit 1; }
-case "$REPO" in
-  */*) ;;
-  *) echo "RIPARR_REPO must be owner/name, got '$REPO'" >&2; exit 2 ;;
-esac
 if ! printf '%s' "$REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
   echo "RIPARR_REPO must be owner/name, got '$REPO'" >&2; exit 2
 fi
@@ -81,7 +79,6 @@ done
 
 # ── progress, for the web page ──
 # JSON in a root-owned directory, world-readable: it carries progress, not secrets.
-install -d -o root -g root -m 0755 "$STATUS_DIR"
 PROVENANCE="" VERSION_OUT=""
 say() {   # phase, progress (0..1), message, [detail]
   python3 - "$1" "$2" "$3" "${4:-}" "$VERSION_OUT" "$PROVENANCE" "$STATE" <<'PY'
@@ -114,7 +111,8 @@ if [ -n "$REQUEST" ]; then
 fi
 
 valid_tag() { printf '%s' "$1" | grep -Eq '^v?[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$'; }
-valid_version() { printf '%s' "$1" | grep -Eq '^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$'; }
+valid_version() { case "$1" in v*) return 1 ;; esac; valid_tag "$1"; }
+tree_version() { sed -n 's/^__version__ = "\(.*\)"/\1/p' "$1/server/riparr/__init__.py" 2>/dev/null || true; }
 
 if [ "$MODE" = tag ]; then
   valid_tag "$TAG" || fail "The update request did not name a release version, so nothing was done." "got: '$TAG'" 2
@@ -194,16 +192,30 @@ build_venv() {   # release dir
   own "$rel/.venv"
 }
 
+# The tree is root's by now (own), so its own apply-system.sh is run: its first act
+# is to refuse anything in the tree that is not root's, and its last is to refresh
+# root's copy in $LIB. One trust predicate, in one place. Root's copy is the fallback
+# for a tree that ships none (a test tree, a very old release).
 apply_system() {
-  local rel="$ROOT/current"
+  local script="$ROOT/current/packaging/apply-system.sh"
   say applying 0.9 "Installing system units and helpers from the new version"
-  if [ -f "$rel/packaging/apply-system.sh" ] && [ ! -L "$rel/packaging/apply-system.sh" ] \
-     && [ "$(stat -c %u "$rel/packaging/apply-system.sh")" = 0 ]; then
-    install -o root -g root -m 0755 "$rel/packaging/apply-system.sh" "$LIB/apply-system.sh"
+  [ -f "$script" ] && [ ! -L "$script" ] || script="$LIB/apply-system.sh"
+  if [ -x "$script" ]; then
+    RIPARR_INSTALL_DIR="$ROOT" "$script" || return 1
   fi
-  if [ -x "$LIB/apply-system.sh" ]; then
-    RIPARR_INSTALL_DIR="$ROOT" "$LIB/apply-system.sh" || return 1
+}
+
+# A verified, root-owned tree becomes releases/<name>: the directory of the same
+# name, if there is one (reinstalling the running version), is moved aside rather
+# than deleted under the service, removed once current has moved on.
+place_release() {   # tree, name
+  local tree="$1" dest="$ROOT/releases/$2"
+  if [ -d "$dest" ]; then
+    mv -T "$dest" "$dest.old"
   fi
+  mv -T "$tree" "$dest"
+  flip_to "releases/$2"
+  rm -rf "$dest.old"
 }
 
 restart_service() {
@@ -227,7 +239,7 @@ finish() {   # message
 if [ "$MODE" = rollback ]; then
   prev=$(readlink "$ROOT/previous" 2>/dev/null || true)
   [ -n "$prev" ] && [ -d "$ROOT/$prev" ] || fail "There is no previous version to go back to." "" 2
-  VERSION_OUT=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$ROOT/$prev/server/riparr/__init__.py" 2>/dev/null || true)
+  VERSION_OUT=$(tree_version "$ROOT/$prev")
   say swapping 0.8 "Going back to the previous version" "$prev"
   flip_to "$prev"
   finish "Rolled back to ${VERSION_OUT:-the previous version}."
@@ -247,16 +259,8 @@ if [ "$MODE" = tree ]; then
     | tar -xf - -C "$WORK/tree" || fail "Could not copy $TREE"
   own "$WORK/tree"
   build_venv "$WORK/tree" || fail "Dependencies failed to install. Nothing was changed."
-  dest="$ROOT/releases/$VERSION"
-  if [ -d "$dest" ]; then
-    # Reinstalling the version that is running: the old directory is renamed aside
-    # rather than deleted under the service, and removed once current has moved.
-    mv -T "$dest" "$dest.old"
-  fi
-  mv -T "$WORK/tree" "$dest"
+  place_release "$WORK/tree" "$VERSION"
   rm -rf "$WORK"; WORK=""
-  flip_to "releases/$VERSION"
-  rm -rf "$dest.old"
   finish "Installed Riparr $VERSION."
 fi
 
@@ -272,6 +276,7 @@ say downloading 0.1 "Downloading Riparr $VERSION_OUT" "$BASE/$TAG/$ASSET"
 fetch() {   # url, dest
   curl -fsSL --retry 3 --connect-timeout 20 --max-time 900 -o "$2" "$1"
 }
+sha_of() { sha256sum "$1" | cut -d' ' -f1; }
 fetch "$BASE/$TAG/$ASSET" "$WORK/$ASSET" \
   || fail "Could not download the release archive." "$BASE/$TAG/$ASSET"
 fetch "$BASE/$TAG/$SUMS" "$WORK/$SUMS" \
@@ -279,7 +284,7 @@ fetch "$BASE/$TAG/$SUMS" "$WORK/$SUMS" \
 
 say verifying 0.3 "Checking the download against its published checksum"
 expected=$(awk -v n="$ASSET" '{ f=$2; sub(/^\*/, "", f); if (f == n) { print $1; exit } }' "$WORK/$SUMS")
-actual=$(sha256sum "$WORK/$ASSET" | cut -d' ' -f1)
+actual=$(sha_of "$WORK/$ASSET")
 [ -n "$expected" ] || fail "The release's checksum file does not list the appliance archive. Nothing was changed."
 [ "$expected" = "$actual" ] || fail "The download did not match its published checksum. Nothing was changed." "expected ${expected:0:16}, got ${actual:0:16}"
 
@@ -356,45 +361,21 @@ say verifying 0.4 "Checksum matches; provenance: $PROVENANCE"
 
 # ── unpack ──
 # Refuse anything that would land outside the directory: absolute names, `..`, links
-# that point out, device nodes. Python's `data` filter does exactly that on 3.12 and on
-# the 3.11 the box may have; the manual walk is for anything older.
+# that point out, device nodes (packaging/safe-untar.py, shared with the MakeMKV
+# installer).
 say unpacking 0.5 "Unpacking Riparr $VERSION_OUT"
 mkdir -p "$WORK/unpack"
-python3 - "$WORK/$ASSET" "$WORK/unpack" <<'PY' >"$WORK/unpack.log" 2>&1 \
+python3 -I "$HERE/safe-untar.py" "$WORK/$ASSET" "$WORK/unpack" >"$WORK/unpack.log" 2>&1 \
   || fail "The archive could not be unpacked safely, so it was not installed." "$(tail -n 5 "$WORK/unpack.log")"
-import os, sys, tarfile
-archive, dest = sys.argv[1], sys.argv[2]
-base = os.path.realpath(dest)
-with tarfile.open(archive) as t:
-    for m in t.getmembers():
-        target = os.path.realpath(os.path.join(dest, m.name))
-        if target != base and not target.startswith(base + os.sep):
-            raise SystemExit("unsafe path in archive: %s" % m.name)
-        if m.issym() or m.islnk():
-            link = os.path.realpath(os.path.join(os.path.dirname(target), m.linkname))
-            if not link.startswith(base + os.sep):
-                raise SystemExit("unsafe link in archive: %s -> %s" % (m.name, m.linkname))
-        if m.isdev():
-            raise SystemExit("device node in archive: %s" % m.name)
-    if hasattr(tarfile, "data_filter"):
-        t.extractall(dest, filter="data")
-    else:
-        t.extractall(dest)
-PY
 tree="$WORK/unpack/riparr"
 [ -f "$tree/server/riparr/main.py" ] \
   || fail "That archive does not look like Riparr, so it was not installed. Nothing was changed."
-got_version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$tree/server/riparr/__init__.py" 2>/dev/null || true)
+got_version=$(tree_version "$tree")
 [ -n "$got_version" ] && VERSION_OUT="$got_version"
 own "$tree"
 build_venv "$tree" || fail "The new version could not install what it needs, so it was not installed. Nothing was changed."
 
 # ── swap ──
 say swapping 0.8 "Switching to Riparr $VERSION_OUT"
-if [ -d "$rel_dir" ]; then
-  mv -T "$rel_dir" "$rel_dir.old"
-fi
-mv -T "$tree" "$rel_dir"
-rm -rf "$rel_dir.old"
-flip_to "releases/$TAG"
+place_release "$tree" "$TAG"
 finish "Updated to $VERSION_OUT. Riparr is restarting."

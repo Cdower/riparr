@@ -73,7 +73,7 @@ default_id = default["id"]
 # password with a newline would add a line to the credentials file. Anything that
 # does not fit is skipped and named on stderr, never "cleaned up".
 import re
-HOST_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:-]{0,253}$")     # DNS names, IPv4, IPv6
+HOST_OK = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,253}$")   # DNS names, NetBIOS names (underscores), IPv4, IPv6
 SHARE_OK = re.compile(r"^[^\x00-\x1f\x7f/\\,]{1,80}$")
 DOMAIN_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 CRED_OK = re.compile(r"^[^\x00-\x1f\x7f]{0,255}$")                # one line, any printable

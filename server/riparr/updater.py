@@ -7,9 +7,7 @@ checks GitHub for a release and asks for it by tag; the root side
 (packaging/riparr-update.sh) downloads, verifies, unpacks, swaps and restarts, and the
 running version is never touched until the new one is in place and checked.
 """
-import hashlib
 import json
-import os
 import re
 import time
 import urllib.error
@@ -20,7 +18,6 @@ from . import platform as P
 
 REPO = "jackharvest/riparr"
 GITHUB_API = "https://api.github.com"
-INSTALL_DIR = os.environ.get("RIPARR_INSTALL_DIR", "/opt/riparr")
 
 
 def current_version():
@@ -68,11 +65,6 @@ def check(repo=REPO, timeout=8):
         "published": data.get("published_at"),
         "url": data.get("html_url"),
         "asset": payload,
-        # The checksums file, located by asset URL rather than by building a path out of
-        # a version. `latest` is this half's version and stopped being the tag when the
-        # two halves began versioning apart, so a constructed path now points at the
-        # wrong release -- or at no release at all.
-        "sums_url": _sums_url(assets),
         "can_install": bool(payload) and P.IS_APPLIANCE,
         "message": ("Version %s is available." % latest) if _newer(latest, __version__)
                    else "Riparr is up to date.",
@@ -96,14 +88,8 @@ def _pick_asset(assets):
     return None
 
 
-# How long the request that started an update waits for the root side to finish
-# before answering "still running". A download plus a pip install on a Zero 2 W is
-# minutes, not seconds; the state file keeps saying what is happening either way.
-INSTALL_TIMEOUT = 25 * 60
-
-
-def install(repo=REPO, wait=True, timeout=INSTALL_TIMEOUT, poll=1.0):
-    """Ask the root side to install the latest release, and wait for its answer.
+def install(repo=REPO):
+    """Ask the root side to install the latest release, and come straight back.
 
     Refuses to run anywhere but the appliance -- asking for /opt/riparr to be replaced
     on a development Mac would be a genuinely destructive surprise.
@@ -115,13 +101,13 @@ def install(repo=REPO, wait=True, timeout=INSTALL_TIMEOUT, poll=1.0):
     the release tag -- into its request file, and `packaging/riparr-update.sh` does the
     rest as root against a tree this account cannot write: fetch, verify the checksum
     and the build provenance, unpack, `pip install --require-hashes`, swap, apply the
-    system units, restart. Progress comes back through a root-owned status file, which
-    is what this polls.
+    system units, restart. Progress comes back through a root-owned status file
+    (platform.update_state), which the page polls.
 
-    The answer is honest about what happened. "done" with a version means the new
-    release is on disk and the service is about to restart. "error" carries the root
-    side's reason. A timeout means the work is still going on and the page should
-    look again, not that it failed.
+    `started` is the box's own clock at the moment of asking. The page compares it
+    with the `at` the root side stamps on its state, so a result from an earlier run
+    is never mistaken for this one -- and never the browser's clock, which on a board
+    with no RTC can be minutes from the box's.
     """
     if not P.IS_APPLIANCE:
         return {"ok": False,
@@ -147,96 +133,13 @@ def install(repo=REPO, wait=True, timeout=INSTALL_TIMEOUT, poll=1.0):
                 "detail": "Once, over SSH, from a verified release archive (see the "
                           "README): sudo bash riparr/tools/install.sh. After that, "
                           "updates install from here again."}
-
     started = int(time.time())
     if not P.request_update(tag):
         return {"ok": False,
                 "message": "Could not ask the system to install the update. Nothing "
                            "was changed."}
-    if not wait:
-        return {"ok": True, "pending": True, "version": info["latest"],
-                "message": "Installing %s in the background." % info["latest"]}
-
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        time.sleep(poll)
-        st = P.update_state()
-        if not st or (st.get("at") or 0) < started:
-            continue                    # an older run's result, or nothing yet
-        phase = st.get("phase")
-        if phase == "done":
-            return {"ok": True, "message": st.get("message") or
-                    "Updated to %s. Riparr is restarting." % st.get("version", info["latest"]),
-                    "version": st.get("version") or info["latest"],
-                    "provenance": st.get("provenance"),
-                    "restarted": "restart", "needs_restart": False, "provisioned": True}
-        if phase == "error":
-            return {"ok": False,
-                    "message": st.get("message") or "The update failed. Nothing was changed.",
-                    "detail": st.get("detail") or ""}
-    return {"ok": False, "pending": True, "version": info["latest"],
-            "message": "The update is still running. This page will show its progress; "
-                       "nothing needs doing.",
-            "state": P.update_state()}
-
-
-def install_state():
-    """The root side's latest word on an update, for the page to show."""
-    return P.update_state()
-
-
-# Both spellings, because the answer to "which case is it?" should not be a brick.
-# The release publishes SHA256SUMS.txt; the original code asked for sha256sums.txt,
-# got a 404, returned None -- and the caller read None as "nothing to compare against"
-# and installed the download unverified. A checksum that silently stops being checked
-# is worse than no checksum at all, so a missing file is now a refusal (see install).
-_SUMS_NAMES = ("SHA256SUMS.txt", "sha256sums.txt")
-
-
-def _sums_url(assets):
-    """The release's own URL for its checksums file, if it publishes one."""
-    for a in assets or []:
-        if (a.get("name") or "") in _SUMS_NAMES and a.get("browser_download_url"):
-            return a["browser_download_url"]
-    return None
-
-
-def _expected_hash(name, sums_url=None, repo=REPO, tag=""):
-    """The published SHA-256 for `name`, or None if it cannot be established.
-
-    Prefers the URL the release itself gives for its checksums file. The constructed
-    path is kept only for releases whose asset list could not be read, and is built from
-    the *tag* -- never from a component version, which is what broke this: on a release
-    tagged v0.2.3 carrying appliance 0.2.2, asking for v0.2.2's checksums fetches a
-    different release's numbers and compares them against this one's download.
-    """
-    if sums_url:
-        urls = [sums_url]
-    elif tag:
-        urls = ["https://github.com/%s/releases/download/v%s/%s" % (repo, tag, s)
-                for s in _SUMS_NAMES]
-    else:
-        urls = []
-    for url in urls:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "riparr"})
-            with urllib.request.urlopen(req, timeout=30) as r:
-                body = r.read().decode()
-        except Exception:
-            continue
-        for line in body.splitlines():
-            parts = line.split()
-            if len(parts) >= 2 and parts[-1].lstrip("*") == name:
-                return parts[0]
-    return None
-
-
-def _sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    return {"ok": True, "pending": True, "version": info["latest"], "started": started,
+            "message": "Installing %s in the background." % info["latest"]}
 
 
 def _component_version(assets, key, fallback):

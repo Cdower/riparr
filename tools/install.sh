@@ -88,10 +88,12 @@ parse_args() {
 }
 
 # Appliance if the Preparer wrote a riparr.conf to the boot partition, or if the
-# machine has a device-tree model at all -- the same test the service uses for
-# IS_APPLIANCE, so the two never disagree about what kind of machine this is.
-# Arguments are the boot directory (may be empty) and the device-tree model file, so
-# the decision can be tested without a board.
+# machine has a device-tree model at all. This is a different question from the
+# service's IS_APPLIANCE (real hardware versus a developer's mock), so it is a
+# different test: a VM with a riparr.conf is a dedicated machine as far as system-wide
+# settings go, and still runs the service against real drives. Arguments are the boot
+# directory (may be empty) and the device-tree model file, so the decision can be
+# tested without a board.
 decide_mode() {   # boot_dir, model_file
   local boot="$1" model="$2"
   if [ -n "$boot" ] && [ -f "$boot/riparr.conf" ]; then echo appliance; return; fi
@@ -299,14 +301,6 @@ SERVICE
   for g in cdrom video spi gpio netdev; do
     getent group "$g" >/dev/null && usermod -aG "$g" "$RIPARR_USER"
   done
-  # MakeMKV and libdvdcss are compiled by this account, never by root
-  # (packaging/staged-install.sh). The installers create it too, for boxes that
-  # predate it.
-  if ! id -u "$BUILD_USER" >/dev/null 2>&1; then
-    useradd --system --no-create-home --home-dir /nonexistent \
-            --shell /usr/sbin/nologin "$BUILD_USER"
-    changed "account $BUILD_USER created (compiles MakeMKV and libdvdcss unprivileged)"
-  fi
   install -d -o "$RIPARR_USER" -g "$RIPARR_USER" "$DATA_DIR"
   # The dedicated staging partition (D4) does not exist on a stock image. Create
   # the directory anyway: the service declares it writable, and the status page reports
@@ -341,6 +335,16 @@ SERVICE
   VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$SRC/server/riparr/__init__.py" 2>/dev/null || echo "")
   [ -n "$VERSION" ] || die "Could not read the version from $SRC/server/riparr/__init__.py"
   info "installing Riparr $VERSION from $SRC"
+
+  # MakeMKV and libdvdcss are compiled by this account, never by root. The one
+  # definition of it is in packaging/staged-install.sh; the installers call the same
+  # function, for boxes that predate it.
+  if ! id -u "$BUILD_USER" >/dev/null 2>&1; then
+    # shellcheck source=packaging/staged-install.sh
+    . "$SRC/packaging/staged-install.sh"
+    ensure_build_user
+    changed "account $BUILD_USER created (compiles MakeMKV and libdvdcss unprivileged)"
+  fi
 
   # ── 4. the release tree and its python environment ──
   say "4/6  Python environment"

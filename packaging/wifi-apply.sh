@@ -26,15 +26,12 @@ DB="${RIPARR_DB:-/var/lib/riparr/riparr.db}"
 PY="${RIPARR_PYTHON:-python3}"
 IFACE="${RIPARR_WIFI_IFACE:-}"
 CONF_DIR="${RIPARR_WPA_DIR:-/etc/wpa_supplicant}"
-# Progress and results go to a directory that is root's, never into /run/riparr: that
-# one is the service's, and a root helper writing into it could be made to write
-# through a symlink the service planted. The service reads this; it cannot write it.
-STATUS_DIR="${RIPARR_STATUS_DIR:-/run/riparr-status}"
+# shellcheck source=packaging/status-lib.sh
+. "$(dirname "$0")/status-lib.sh"
 STATE="$STATUS_DIR/wifi.state"
 IMPORT="$STATUS_DIR/wifi.merged.json"
 
 say() {   # phase, message, detail
-  install -d -o root -g root -m 0755 "$STATUS_DIR"
   "$PY" - "$1" "$2" "${3:-}" > "$STATE" <<'PYEOF'
 import json, sys, time
 print(json.dumps({"phase": sys.argv[1], "message": sys.argv[2],
@@ -175,7 +172,7 @@ import unicodedata
 
 
 def ssid_ok(s):
-    if not isinstance(s, str) or not s or len(s.encode("utf-8")) > 32:
+    if not s or len(s.encode("utf-8")) > 32:
         return False
     return not any(unicodedata.category(ch)[0] == "C" for ch in s)
 
@@ -187,7 +184,8 @@ rank = 10 * len(nets)
 for n in nets:
     if not isinstance(n, dict):
         continue
-    ssid = (n.get("ssid") or "").strip() if isinstance(n.get("ssid"), str) else ""
+    ssid = n.get("ssid")
+    ssid = ssid.strip() if isinstance(ssid, str) else ""
     if not ssid or ssid in seen:
         continue
     if not ssid_ok(ssid):

@@ -33,10 +33,13 @@ Four things, in the order a request meets them:
 docs/hardened-deployment.md puts them together with a loopback bind and a proxy.
 """
 import hmac
+import json
 import os
 from urllib.parse import urlsplit
 
 from starlette.exceptions import HTTPException
+
+from . import platform as P
 
 DEFAULT_MAX_BODY = 64 * 1024 * 1024
 GATE_COOKIE = "riparr_gate"
@@ -79,7 +82,7 @@ def cookie_secure():
     """Whether cookies carry the Secure flag. Off by default: the appliance speaks
     plain HTTP on the LAN, and a Secure cookie over HTTP is a cookie the browser
     never sends back. On behind a TLS proxy or `tailscale serve`."""
-    return os.environ.get("RIPARR_COOKIE_SECURE", "0") not in ("", "0", "no", "false")
+    return P.env_flag("RIPARR_COOKIE_SECURE", False)
 
 
 def token_matches(presented):
@@ -89,69 +92,61 @@ def token_matches(presented):
     return hmac.compare_digest(presented.encode(), want.encode())
 
 
-def _header(scope, name):
-    for k, v in scope.get("headers") or []:
-        if k == name:
-            return v.decode("latin-1")
-    return None
+def _headers(scope):
+    """The request headers as {name: value}, built once per request."""
+    return {k: v.decode("latin-1") for k, v in scope.get("headers") or []}
 
 
-def _json(status, detail):
-    body = ('{"detail": %s}' % _quote(detail)).encode()
-    return status, body
-
-
-def _quote(s):
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+def _too_large(limit):
+    return "That is larger than this box accepts (%d bytes)." % limit
 
 
 async def _reply(send, status, detail):
-    status, body = _json(status, detail)
+    body = json.dumps({"detail": detail}).encode()
     await send({"type": "http.response.start", "status": status,
                 "headers": [(b"content-type", b"application/json"),
                             (b"content-length", str(len(body)).encode())] + HEADERS})
     await send({"type": "http.response.body", "body": body})
 
 
-def bearer_ok(scope):
+def _bearer_ok(headers):
     """True when the request authenticates with the gate token in a bearer header."""
-    auth = _header(scope, b"authorization") or ""
-    if not auth.lower().startswith("bearer "):
-        return False
-    return token_matches(auth[7:].strip())
+    auth = headers.get(b"authorization") or ""
+    return auth.lower().startswith("bearer ") and token_matches(auth[7:].strip())
 
 
-def gate_cookie_ok(scope, verify):
+def _gate_cookie_ok(headers, verify):
     """True when the request carries a gate cookie that `verify` accepts."""
-    raw = _header(scope, b"cookie") or ""
-    for part in raw.split(";"):
+    for part in (headers.get(b"cookie") or "").split(";"):
         k, _, v = part.strip().partition("=")
         if k == GATE_COOKIE and v:
             return bool(verify(v))
     return False
 
 
-def same_origin(scope):
+def gate_passed(scope):
+    """The middleware's verdict for this request: did it present the token, by bearer
+    header or by gate cookie? Recorded once in the scope so the handlers that are open
+    before the gate (setup/state) can shape their answer without deciding again."""
+    return bool(scope.get("riparr.gate_ok"))
+
+
+def _same_origin(headers):
     """Is this request from this origin? None when the browser said nothing either
     way; True/False when it did."""
-    sfs = (_header(scope, b"sec-fetch-site") or "").lower()
+    sfs = (headers.get(b"sec-fetch-site") or "").lower()
     if sfs:
-        if sfs in ("same-origin", "none"):
-            return True
-        if sfs == "cross-site":
-            return False
-        # "same-site": a sibling host under the same registrable domain. The page is
-        # never served that way, so it is treated as another origin.
-        return False
-    origin = _header(scope, b"origin")
+        # "same-site" (a sibling host under the same registrable domain) counts as
+        # another origin: the page is never served that way.
+        return sfs in ("same-origin", "none")
+    origin = headers.get(b"origin")
     if origin is None:
         return None
-    host = _header(scope, b"host") or ""
     try:
         netloc = urlsplit(origin).netloc
     except ValueError:
         return False
-    return bool(netloc) and netloc.lower() == host.lower()
+    return bool(netloc) and netloc.lower() == (headers.get(b"host") or "").lower()
 
 
 class _TooLarge(HTTPException):
@@ -161,8 +156,7 @@ class _TooLarge(HTTPException):
     re-raises, and the app's own exception handling turns it into the 413."""
 
     def __init__(self, limit):
-        super().__init__(status_code=413,
-                         detail="That is larger than this box accepts (%d bytes)." % limit)
+        super().__init__(status_code=413, detail=_too_large(limit))
 
 
 class Edge:
@@ -178,33 +172,35 @@ class Edge:
         path = scope.get("path") or ""
         method = (scope.get("method") or "GET").upper()
         api = path.startswith("/api/")
+        headers = _headers(scope)
 
         # 1. the body limit, from the declared length first
         limit = max_body()
-        declared = _header(scope, b"content-length")
+        declared = headers.get(b"content-length")
         if declared is not None:
             try:
                 if int(declared) > limit:
-                    return await _reply(send, 413, "That is larger than this box accepts "
-                                        "(%d bytes)." % limit)
+                    return await _reply(send, 413, _too_large(limit))
             except ValueError:
                 return await _reply(send, 400, "Bad Content-Length")
 
-        bearer = bearer_ok(scope)
-
-        # 2. the gate
+        # 2. the gate. The token is looked at only when something needs it: a GET of a
+        # static file on an ungated box costs no header scan and no compare.
         token = gate_token()
-        if token and api and not bearer and path not in GATE_OPEN_PATHS:
-            if not gate_cookie_ok(scope, self.verify_gate):
+        bearer = False
+        if api and (token or method in UNSAFE_METHODS):
+            bearer = _bearer_ok(headers)
+        if token and api:
+            scope["riparr.gate_ok"] = bearer or _gate_cookie_ok(headers, self.verify_gate)
+            if not scope["riparr.gate_ok"] and path not in GATE_OPEN_PATHS:
                 return await _reply(send, 401, "This box needs its access token. Sign in "
                                     "with it, or send it as a bearer token.")
 
         # 3. CSRF, for anything that changes state from a browser
         if api and method in UNSAFE_METHODS and not bearer:
-            so = same_origin(scope)
-            if so is False:
+            if _same_origin(headers) is False:
                 return await _reply(send, 403, "Cross-site request refused.")
-            if _header(scope, REQUEST_HEADER) is None:
+            if REQUEST_HEADER not in headers:
                 return await _reply(send, 403, "State-changing requests need the "
                                     "X-Riparr-Request header (the page sends it), or "
                                     "a bearer token.")
@@ -227,15 +223,14 @@ class Edge:
             nonlocal started
             if msg["type"] == "http.response.start":
                 started = True
-                headers = list(msg.get("headers") or [])
-                have = {k.lower() for k, _ in headers}
-                headers += [(k, v) for k, v in HEADERS if k not in have]
-                msg = dict(msg, headers=headers)
+                hdrs = list(msg.get("headers") or [])
+                have = {k.lower() for k, _ in hdrs}
+                hdrs += [(k, v) for k, v in HEADERS if k not in have]
+                msg = dict(msg, headers=hdrs)
             await send(msg)
 
         try:
             await self.app(scope, limited_receive, send_with_headers)
         except _TooLarge:
             if not started:
-                await _reply(send, 413, "That is larger than this box accepts (%d bytes)."
-                             % limit)
+                await _reply(send, 413, _too_large(limit))

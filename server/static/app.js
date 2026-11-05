@@ -4696,7 +4696,11 @@ function wireContent(section, sub) {
     // pip, swap, restart) and says where it is through a status file. Poll it. The
     // request that asked for this came straight back, so nothing here depends on a
     // connection staying open for the minutes a Zero 2 W needs.
-    const since = Math.floor(Date.now() / 1000) - 2;
+    //
+    // `started` is the box's clock, not this browser's: a board with no RTC can be
+    // minutes off, and a result stamped by one clock compared against another either
+    // never arrives or arrives from the previous run.
+    const since = r.started || 0;
     show("", `Installing ${esc(r.version || "")}\u2026`);
     const poll = async () => {
       let st = null;

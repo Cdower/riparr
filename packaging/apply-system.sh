@@ -91,14 +91,14 @@ adopt_legacy_layout() {
 }
 adopt_legacy_layout
 
-PKG="$INSTALL_DIR/packaging"
+# Through `current`, not the compatibility link, so this script depends on the one
+# link the layout is defined by.
+PKG="$INSTALL_DIR/current/packaging"
+TOOLS="$INSTALL_DIR/current/tools"
 [ -d "$PKG" ] || { echo "No packaging directory at $PKG" >&2; exit 1; }
 
-# A regular file, root's, that nobody else can write. Symlinks are refused outright:
-# a link in a root-owned directory still names whatever the service wanted it to.
-trusted_file() {
-    [ -L "$1" ] && return 1
-    [ -f "$1" ] || return 1
+# Root's, and nobody else can write it: the one predicate behind every install below.
+root_unwritable() {
     local st
     st=$(stat -c '%u %a' "$1") || return 1
     [ "${st% *}" = 0 ] || return 1
@@ -106,21 +106,28 @@ trusted_file() {
     mode="${mode: -3}"
     [ "$(( 8#$mode & 8#022 ))" = 0 ]
 }
+# A regular file. Symlinks are refused outright: a link in a root-owned directory
+# still names whatever the service wanted it to.
+trusted_file() { [ ! -L "$1" ] && [ -f "$1" ] && root_unwritable "$1"; }
 trusted_dir() {
     local d
     d=$(readlink -f "$1") || return 1
-    [ -d "$d" ] || return 1
-    local st
-    st=$(stat -c '%u %a' "$d") || return 1
-    [ "${st% *}" = 0 ] || return 1
-    local mode="${st#* }"
-    mode="${mode: -3}"
-    [ "$(( 8#$mode & 8#022 ))" = 0 ]
+    [ -d "$d" ] && root_unwritable "$d"
+}
+# Install one file if it is trusted; refuse it by name if it is there and is not.
+# Returns 1 when the source is absent, so a caller can skip optional files.
+install_trusted() {   # src, dst, mode
+    [ -e "$1" ] || [ -L "$1" ] || return 1
+    if ! trusted_file "$1"; then
+        refuse "$1 is not a root-owned, unwritable regular file; not installed"
+        return 1
+    fi
+    install -o root -g root -m "$3" "$1" "$2"
 }
 
 # The directories everything below is read from. If the service account could write
 # either, every file in it is suspect, so nothing is installed at all.
-for d in "$INSTALL_DIR" "$PKG" "$INSTALL_DIR/tools"; do
+for d in "$INSTALL_DIR" "$PKG" "$TOOLS"; do
     [ -e "$d" ] || continue
     if ! trusted_dir "$d"; then
         refuse "$d is not a root-owned directory closed to other writers; installing nothing from it"
@@ -142,17 +149,9 @@ thermal_changed=0
 for s in wifi-apply.sh usbhost-fix.sh makemkv-run.sh netwatch.sh dvdtools-install.sh \
          cdtools-install.sh thermal.sh riparr-update.sh power-allowed.sh; do
     [ -e "$PKG/$s" ] || [ -L "$PKG/$s" ] || continue
-    if ! trusted_file "$PKG/$s"; then
-        refuse "$PKG/$s is not a root-owned, unwritable regular file; not installed"
-        continue
-    fi
-    if [ "$s" = netwatch.sh ] && ! cmp -s "$PKG/$s" "$LIB/$s"; then
-        netwatch_changed=1
-    fi
-    if [ "$s" = thermal.sh ] && ! cmp -s "$PKG/$s" "$LIB/$s"; then
-        thermal_changed=1
-    fi
-    install -o root -g root -m 0755 "$PKG/$s" "$LIB/$s"
+    [ "$s" = netwatch.sh ] && ! cmp -s "$PKG/$s" "$LIB/$s" && netwatch_changed=1
+    [ "$s" = thermal.sh ] && ! cmp -s "$PKG/$s" "$LIB/$s" && thermal_changed=1
+    install_trusted "$PKG/$s" "$LIB/$s" 0755 || true
 done
 
 # Data files beside the helpers: read by root, never executed, so 0644.
@@ -160,13 +159,11 @@ done
 #   powerkey.py            the power button's root half, same arrangement
 #   makemkv-manifest.json  the MakeMKV installer's one source of versions and hashes
 #   staged-install.sh      sourced by the MakeMKV and DVD-tools installers, never run
-for f in netwatch-settings.py powerkey.py makemkv-manifest.json staged-install.sh; do
-    [ -e "$PKG/$f" ] || [ -L "$PKG/$f" ] || continue
-    if ! trusted_file "$PKG/$f"; then
-        refuse "$PKG/$f is not a root-owned, unwritable regular file; not installed"
-        continue
-    fi
-    install -o root -g root -m 0644 "$PKG/$f" "$LIB/$f"
+#   status-lib.sh          sourced by every helper that reports progress
+#   safe-untar.py          run as an argument to python3 by the two that unpack archives
+for f in netwatch-settings.py powerkey.py makemkv-manifest.json staged-install.sh \
+         status-lib.sh safe-untar.py; do
+    install_trusted "$PKG/$f" "$LIB/$f" 0644 || true
 done
 
 # Two helpers live in tools/ rather than packaging/ but are root-side like the rest and
@@ -174,22 +171,13 @@ done
 # only by install.sh, so a web update never refreshed it; mount-library.sh used to be
 # executed straight out of /opt/riparr.
 for s in makemkv-install.sh mount-library.sh; do
-    [ -e "$INSTALL_DIR/tools/$s" ] || [ -L "$INSTALL_DIR/tools/$s" ] || continue
-    if ! trusted_file "$INSTALL_DIR/tools/$s"; then
-        refuse "$INSTALL_DIR/tools/$s is not a root-owned, unwritable regular file; not installed"
-        continue
-    fi
-    install -o root -g root -m 0755 "$INSTALL_DIR/tools/$s" "$LIB/$s"
+    install_trusted "$TOOLS/$s" "$LIB/$s" 0755 || true
 done
 
 # This script's own root copy, refreshed last of the helpers so a box picks up a newer
 # version on its next provision. GNU install unlinks the destination before writing,
 # so the copy that is running right now is not rewritten underneath itself.
-if trusted_file "$PKG/apply-system.sh"; then
-    install -o root -g root -m 0755 "$PKG/apply-system.sh" "$LIB/apply-system.sh"
-else
-    refuse "$PKG/apply-system.sh is not a root-owned, unwritable regular file; root's copy not refreshed"
-fi
+install_trusted "$PKG/apply-system.sh" "$LIB/apply-system.sh" 0755 || true
 
 # ── units ──
 # Same argument: an explicit list, so this cannot install something unreviewed.
@@ -215,19 +203,14 @@ for u in riparr.slice riparr.service \
          riparr-restart.service riparr-restart.path \
          riparr-remount.service riparr-remount.path \
          riparr-library.service; do
-    [ -e "$PKG/$u" ] || [ -L "$PKG/$u" ] || continue
-    if ! trusted_file "$PKG/$u"; then
-        refuse "$PKG/$u is not a root-owned, unwritable regular file; not installed"
-        continue
-    fi
-    install -o root -g root -m 0644 "$PKG/$u" "$UNITS/$u"
+    install_trusted "$PKG/$u" "$UNITS/$u" 0644 || true
 done
 
 # The root-side status directory has to exist at every boot, not only after a
-# provision. systemd-tmpfiles recreates it from this.
-if [ -f "$PKG/riparr-tmpfiles.conf" ] && trusted_file "$PKG/riparr-tmpfiles.conf"; then
-    install -d -m 0755 "$SYSROOT/etc/tmpfiles.d"
-    install -o root -g root -m 0644 "$PKG/riparr-tmpfiles.conf" "$SYSROOT/etc/tmpfiles.d/riparr.conf"
+# provision. systemd-tmpfiles recreates it from this, and creates it now.
+install -d -m 0755 "$SYSROOT/etc/tmpfiles.d"
+if install_trusted "$PKG/riparr-tmpfiles.conf" "$SYSROOT/etc/tmpfiles.d/riparr.conf" 0644; then
+    systemd-tmpfiles --create "$SYSROOT/etc/tmpfiles.d/riparr.conf" 2>/dev/null || true
 fi
 
 systemctl daemon-reload

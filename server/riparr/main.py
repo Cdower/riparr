@@ -37,8 +37,16 @@ app = FastAPI(title="Riparr", version=__version__, docs_url=_DOCS,
               openapi_url=_OPENAPI)
 
 
+# Cached like _SECRET, because the middleware verifies a gate cookie on every /api
+# request of a gated box; _rotate_secret drops it along with the secret.
+_GATE_SERIALIZER = None
+
+
 def _gate_serializer():
-    return URLSafeTimedSerializer(_secret(), salt="riparr-gate")
+    global _GATE_SERIALIZER
+    if _GATE_SERIALIZER is None:
+        _GATE_SERIALIZER = URLSafeTimedSerializer(_secret(), salt="riparr-gate")
+    return _GATE_SERIALIZER
 
 
 def _gate_cookie_valid(value):
@@ -93,8 +101,9 @@ def _rotate_secret():
     one. This is how a password change logs out other devices: the sessions are
     stateless (nothing to delete), so revocation is done by changing the key they were
     signed under."""
-    global _SECRET
+    global _SECRET, _GATE_SERIALIZER
     _SECRET = db.set("session_secret", os.urandom(32).hex())
+    _GATE_SERIALIZER = None
     return _SECRET
 
 
@@ -318,9 +327,9 @@ def setup_state(request: Request):
     """
     # Behind the access-token gate, before the token has been presented, this says
     # only what the sign-in page needs: that there is a gate, and whether an account
-    # exists. The share's host, the hostname and the MakeMKV state wait.
-    if WEB.gate_token() and not (WEB.bearer_ok(request.scope)
-                                 or WEB.gate_cookie_ok(request.scope, _gate_cookie_valid)):
+    # exists. The share's host, the hostname and the MakeMKV state wait. The verdict
+    # is the middleware's, recorded once per request.
+    if WEB.gate_token() and not WEB.gate_passed(request.scope):
         return {"has_users": db.has_users(), "complete": bool(db.get("setup_complete")),
                 "gate": True, "version": __version__}
     share = db.default_share()
@@ -343,7 +352,11 @@ def setup_state(request: Request):
 def setup_user(body: SetupUser, response: Response):
     if db.has_users():
         raise HTTPException(status_code=400, detail="An account already exists")
+    # The same escalating delay a wrong password pays: before an account exists this
+    # is the one open path that checks the token, and it must not be the fast one.
     if WEB.gate_token() and not WEB.token_matches(body.token):
+        time.sleep(_login_delay())
+        _login_failed(body.username)
         raise HTTPException(status_code=401, detail="Wrong access token")
     if len(body.password) < 8:
         raise HTTPException(status_code=400, detail="Use at least 8 characters")
@@ -1956,13 +1969,13 @@ def update_install(user=Depends(require_user)):
     an HTTP request open for that is how a proxy or a browser turns a working update
     into "the request failed"; the page polls GET /api/update/install instead.
     """
-    return updater.install(wait=False)
+    return updater.install()
 
 
 @app.get("/api/update/install")
 def update_install_state(user=Depends(require_user)):
     """What the root side says about the update it was asked for, or null."""
-    return {"state": updater.install_state()}
+    return {"state": P.update_state()}
 
 
 # ─────────────────────────── config backup ───────────────────────────
