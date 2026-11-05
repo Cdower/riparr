@@ -68,6 +68,20 @@ except rip.UnreadableDisc as e:
 check("it refuses", isinstance(got, rip.UnreadableDisc), True)
 contains("and says what to do", str(got), "again")
 
+print("no MakeMKV to scan with is not a data disc")
+# read_titles answers [] without makemkvcon. Read as "a disc with no titles", a film
+# would be saved whole as an ISO image.
+real_find, real_mock = rip._makemkvcon, rip.P.MOCK
+rip._makemkvcon, rip.P.MOCK = (lambda: None), False
+try:
+    got = rip.fingerprint(drive)
+except rip.UnreadableDisc as e:
+    got = e
+finally:
+    rip._makemkvcon, rip.P.MOCK = real_find, real_mock
+check("it refuses", isinstance(got, rip.UnreadableDisc), True)
+contains("and says MakeMKV is what's missing", str(got), "MakeMKV")
+
 print("a scan that dies is not an identity either")
 
 

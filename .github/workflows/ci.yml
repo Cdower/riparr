@@ -240,6 +240,11 @@ jobs:
         run: |
           python server/cancel-mid-flight.test.py
 
+      # A disc's identity: its titles, or for a data disc its size. A scan that fails,
+      # or that had no MakeMKV to scan with, is refused rather than hashed from the label.
+      - name: A disc is known by what is on it
+        run: python server/fingerprint.test.py
+
       # Season discs. Detection against the mock disc and against real discs' scans
       # (fixtures/discs -- a Blu-ray whose .mpls order lies, read right by its play-all),
       # then a whole season through every stage. None of these ran in CI until

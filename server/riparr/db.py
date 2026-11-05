@@ -404,7 +404,15 @@ CHOICES = {
     "verify_mode": ("quick", "deep", "off"),
     "log_files": ("card", "memory", "off"),
     "title_3d": ("2d", "3d"),
+    # "ask" is no longer offered; it is accepted so an old backup imports, and
+    # migrate_settings turns it into auto_tv "show".
     "on_season_disc": ("unsure", "ask", "auto"),
+    "auto_movie": ("rip", "show", "ignore"),
+    "auto_tv": ("rip", "show", "ignore"),
+    "auto_music": ("rip", "show", "ignore"),
+    "auto_data": ("rip", "show", "ignore"),
+    "movie_extras": ("none", "all"),
+    "tv_extras": ("none", "all"),
     "duplicate_signal": ("flash", "tray", "both", "off"),
 }
 
@@ -530,8 +538,21 @@ def init():
         for name, decl in cols:
             if name not in have:
                 c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, decl))
-    # "Always show me the season plan" became Auto Rip's per-kind "Show me first" for
-    # TV. Carried across once, so nobody who chose to see every plan stops seeing it.
+    migrate_settings(c)
+    c.commit()
+    _ensure_default_share()
+
+
+def migrate_settings(c=None):
+    """Carry settings stored by an older version over to what they mean now.
+
+    "Always show me the season plan" became Auto Rip's per-kind "Show me first" for
+    TV. Carried across once, so nobody who chose to see every plan stops seeing it.
+    Run at start-up and again after every settings save, import and restore: an old
+    backup restored onto a running box brings the old value with it.
+    """
+    commit = c is None
+    c = c or conn()
     stored = {r["key"]: json.loads(r["value"]) for r in c.execute(
         "SELECT key, value FROM settings WHERE key IN ('on_season_disc','auto_tv')")}
     if stored.get("on_season_disc") == "ask" and "auto_tv" not in stored:
@@ -539,8 +560,9 @@ def init():
                   ("auto_tv", json.dumps("show")))
         c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
                   ("on_season_disc", json.dumps("unsure")))
-    c.commit()
-    _ensure_default_share()
+        if commit:
+            c.commit()
+        settings_changed()
 
 
 # Settings, as their stored JSON text, keyed by name; None means "no row". `get` used to

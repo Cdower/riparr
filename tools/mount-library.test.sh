@@ -52,7 +52,7 @@ printf '#!/bin/sh\necho 0\n' > "$BIN/id"
 printf '#!/bin/sh\nexit 0\n' > "$BIN/mount.cifs"
 # The script finds each share's server before mounting it (DNS, then NetBIOS). The
 # test's NAS names are made up, so every one answers at a documentation address.
-printf '#!/bin/sh\necho "192.0.2.10 STREAM $3"\n' > "$BIN/getent"
+printf '#!/bin/sh\necho "192.0.2.10 STREAM $2"\n' > "$BIN/getent"
 chmod +x "$BIN"/*
 export PATH="$BIN:$PATH"
 

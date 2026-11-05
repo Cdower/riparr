@@ -424,6 +424,7 @@ def restore_settings(settings):
             continue
         db.set(k, v)
         n += 1
+    db.migrate_settings()
     # Registering the key is not a db.set -- see main.put_settings.
     if "makemkv_key" in settings and "makemkv_key" not in rejected:
         from . import makemkv as MK

@@ -740,6 +740,18 @@ def uhd_warning(drive, libredrive=None):
 
 # ─────────────────────────────── identification ───────────────────────────────
 
+_UNREADABLE_TITLES = ("Couldn't read the disc's title list, so it can't be identified. "
+                      "Eject it and try again.")
+_NO_MAKEMKV = ("MakeMKV isn't installed, so Riparr can't tell what this disc is. Install "
+               "it in Settings \u2192 General and put the disc in again.")
+
+
+def _makemkvcon():
+    """The makemkvcon binary, or None when MakeMKV isn't installed."""
+    binary = shutil.which("makemkvcon") or "/usr/local/bin/makemkvcon"
+    return binary if os.path.exists(binary) else None
+
+
 def fingerprint(drive, on_progress=None):
     """A stable identity for a disc, without reading the whole thing.
 
@@ -757,10 +769,13 @@ def fingerprint(drive, on_progress=None):
         titles = list(read_titles(drive.get("device"), drive, on_progress=on_progress))
     except Exception as e:
         log.warning("Title scan failed: %s", e)
-        raise UnreadableDisc("Couldn't read the disc's title list, so it can't be "
-                             "identified. Eject it and try again.")
+        raise UnreadableDisc(_UNREADABLE_TITLES)
     for t in titles:
         parts.append("%d:%d" % (t["index"], t["seconds"]))
+    if not titles and not P.MOCK and _makemkvcon() is None:
+        # read_titles answers [] when there is nothing to scan with, which is not the
+        # same as a disc with no titles: a film read that way would be saved as an ISO.
+        raise UnreadableDisc(_NO_MAKEMKV)
     if not titles:
         # A scan that finished and found nothing is a data disc: it has no titles, so
         # label and media were all there was -- and every game disc labelled CDROM was
@@ -768,8 +783,7 @@ def fingerprint(drive, on_progress=None):
         # them. Only here, so no film's identity changes.
         size = int(drive.get("size_bytes") or 0)
         if not size:
-            raise UnreadableDisc("Couldn't read the disc's title list, so it can't be "
-                                 "identified. Eject it and try again.")
+            raise UnreadableDisc(_UNREADABLE_TITLES)
         parts.append("bytes:%d" % size)
     import hashlib
     return hashlib.sha1("|".join(parts).encode("utf-8", "replace")).hexdigest()
@@ -939,8 +953,8 @@ def read_titles(device, disc=None, on_progress=None):
             and time.time() - _titles_cache["at"] < TITLES_TTL:
         return _titles_cache["titles"]
 
-    binary = shutil.which("makemkvcon") or "/usr/local/bin/makemkvcon"
-    if not os.path.exists(binary):
+    binary = _makemkvcon()
+    if binary is None:
         return []
     # 300s was killing real discs mid-scan. An encrypted retail DVD makes MakeMKV do
     # the decryption work in software, and on four A53 cores that is CPU-bound for

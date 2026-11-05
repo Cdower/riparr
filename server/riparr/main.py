@@ -608,8 +608,14 @@ def _drive_report(drives=None):
                               if n else word)
         d["cannot_read"] = (RIP.unreadable_reason(d, d["libredrive"])
                             if d.get("present") else None)
-        d["space_warning"] = _space_warning(d) if d.get("present") else None
-        d["space_note"] = _space_note(d) if d.get("present") else None
+        if d.get("present"):
+            # Asked once: both lines want it, and each asking is several database reads
+            # and a statvfs of a network mount, on every poll.
+            room = _library_room(d)
+            d["space_warning"] = _space_warning(d, room)
+            d["space_note"] = _space_note(d, room)
+        else:
+            d["space_warning"] = d["space_note"] = None
         out.append(d)
     return out
 
@@ -618,7 +624,10 @@ CD_WORD = {"audio": "Music CD", "enhanced": "Music CD with extras",
            "mixed": "Mixed-mode CD", "data": "Data CD"}
 
 
-def _space_warning(drive):
+_ASK = object()                          # "not worked out yet", where None is an answer
+
+
+def _space_warning(drive, room=_ASK):
     """"This disc is bigger than the room you have", said before the button is pressed.
 
     Preflight already refuses a title that does not fit (`rip._plan_transfer`), but it
@@ -640,7 +649,7 @@ def _space_warning(drive):
     size = drive.get("size_bytes") or 0
     if not size:
         return None
-    lib = _library_room(drive)
+    lib = _library_room(drive) if room is _ASK else room
     if lib is not None:
         return None if size <= lib else (
             "This is a %d GB disc and your library has %d GB free. What gets ripped is "
@@ -655,14 +664,14 @@ def _space_warning(drive):
             % (size // 2 ** 30, free // 2 ** 30))
 
 
-def _space_note(drive):
+def _space_note(drive, room=_ASK):
     """The calm version: how much room this disc will take, where it is going.
 
     Shown instead of a warning when the rip goes straight to the library and fits.
     "Up to", because the whole disc is the ceiling and the rip is usually well under it.
     """
     size = drive.get("size_bytes") or 0
-    lib = _library_room(drive)
+    lib = _library_room(drive) if room is _ASK else room
     if not size or lib is None or size > lib:
         return None
     return ("Up to %s, straight to your library (%s free there)."
@@ -904,6 +913,7 @@ def put_settings(body: Any = Body(...), user=Depends(require_user)):
         if k in SECRET_SETTINGS and v == SECRET_MASK:
             continue                      # unchanged; do not overwrite with the mask
         db.set(k, v)
+    db.migrate_settings()
 
     # The MakeMKV key is not an ordinary setting: storing it registers nothing. The
     # Settings page saves it through here (only the setup wizard uses the dedicated
