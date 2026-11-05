@@ -5,6 +5,15 @@ After=systemd-logind.service
 
 [Service]
 Type=simple
+Slice=riparr.slice
+# The power gate. With RIPARR_ALLOW_POWER=0 this unit does not start, so the button
+# goes back to logind's own handling (an immediate power-off), which is the right
+# answer on a host where Riparr is not in charge of the machine. See
+# packaging/power-allowed.sh.
+EnvironmentFile=-/boot/firmware/riparr.conf
+EnvironmentFile=-/boot/riparr.conf
+EnvironmentFile=-/etc/default/riparr
+ExecCondition=/usr/local/lib/riparr/power-allowed.sh
 # The inhibitor is what stops logind powering off on the key. It lasts exactly as long
 # as powerkey.py does, so if this unit stops, the button goes back to logind's
 # immediate poweroff rather than to nothing.

@@ -653,6 +653,18 @@ POWER_ACTIONS = {"reboot", "poweroff"}
 POWER_REQUEST = "/run/riparr/%s.request"
 
 
+def power_allowed():
+    """Whether this box lets the web page restart or shut it down.
+
+    RIPARR_ALLOW_POWER=0 (in the boot partition's riparr.conf or /etc/default/riparr)
+    turns it off. The default is on: an appliance with no power switch needs a safe way
+    to stop, and this is it. The root side enforces the same variable
+    (packaging/power-allowed.sh), so this is the polite refusal and that is the real
+    one. tools/install.sh in host mode sets it to 0.
+    """
+    return os.environ.get("RIPARR_ALLOW_POWER", "1") not in ("0", "no", "false", "off")
+
+
 def power_available():
     return all(os.path.exists("/etc/systemd/system/riparr-%s.path" % a)
                for a in POWER_ACTIONS) and os.access("/run/riparr", os.W_OK)
@@ -662,6 +674,9 @@ def power_action(action):
     """Ask the system to restart or shut down. Returns (ok, message)."""
     if action not in POWER_ACTIONS:
         return False, "Unknown action."
+    if not power_allowed():
+        return False, ("Restarting and shutting down from the web page are turned off "
+                       "on this box (RIPARR_ALLOW_POWER=0).")
     if MOCK:
         return True, "%s (simulated)" % action
     if not power_available():

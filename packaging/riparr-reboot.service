@@ -4,6 +4,15 @@ Documentation=https://github.com/jackharvest/riparr
 
 [Service]
 Type=oneshot
+Slice=riparr.slice
+# The power gate. RIPARR_ALLOW_POWER=0 in the boot partition's riparr.conf or in
+# /etc/default/riparr turns this off at the root side; the condition helper also
+# removes the request so the path unit does not fire again. See
+# packaging/power-allowed.sh.
+EnvironmentFile=-/boot/firmware/riparr.conf
+EnvironmentFile=-/boot/riparr.conf
+EnvironmentFile=-/etc/default/riparr
+ExecCondition=/usr/local/lib/riparr/power-allowed.sh reboot
 ExecStartPre=/bin/rm -f /run/riparr/reboot.request
 # Long enough for the HTTP response to reach the browser, so the page can say
 # "Restarting" rather than the request appearing to fail as the box goes away.

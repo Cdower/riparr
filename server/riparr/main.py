@@ -223,7 +223,11 @@ def logout(response: Response):
 
 @app.get("/api/auth/me")
 def me(request: Request):
-    return {"username": current_user(request), "has_users": db.has_users()}
+    return {"username": current_user(request), "has_users": db.has_users(),
+            # What the page should offer. Power controls are hidden, not just refused,
+            # when the box has RIPARR_ALLOW_POWER=0: a Shut down link that always
+            # fails is worse than none.
+            "features": {"power": P.power_allowed()}}
 
 
 class PasswordChange(BaseModel):

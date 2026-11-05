@@ -67,6 +67,22 @@ if not shares or not default:
     raise SystemExit(0)
 default_id = default["id"]
 
+# What a row may say before any of it reaches a mount command or a credentials file.
+# The rows come from the service's database, which the service account writes, and
+# this runs as root: a host with a comma in it would become a mount option, a user or
+# password with a newline would add a line to the credentials file. Anything that
+# does not fit is skipped and named on stderr, never "cleaned up".
+import re
+HOST_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:-]{0,253}$")     # DNS names, IPv4, IPv6
+SHARE_OK = re.compile(r"^[^\x00-\x1f\x7f/\\,]{1,80}$")
+DOMAIN_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+CRED_OK = re.compile(r"^[^\x00-\x1f\x7f]{0,255}$")                # one line, any printable
+
+
+def refuse(sid, why):
+    print("riparr-mount: share %s skipped: %s" % (sid, why), file=sys.stderr)
+
+
 wanted = []
 # Every destination kind in db.KINDS. Music was added after films and television, and a
 # list that names them by hand is a list that silently stops mounting the next one.
@@ -90,6 +106,14 @@ for sid in wanted:
             user, _, dom = user.partition("@")
     if not (r["host"] and share):
         continue
+    if not HOST_OK.match(r["host"]):
+        refuse(sid, "host %r is not a host name or address" % r["host"]); continue
+    if not SHARE_OK.match(share):
+        refuse(sid, "share name %r has a character a mount cannot take" % share); continue
+    if dom != "-" and not DOMAIN_OK.match(dom):
+        refuse(sid, "domain %r is not a domain name" % dom); continue
+    if not CRED_OK.match(user or "") or not CRED_OK.match(r["password"] or ""):
+        refuse(sid, "the user name or password spans more than one line"); continue
     print("\t".join([str(sid), "1" if sid == default_id else "0",
                      r["host"], share, user or "-", dom or "-"]))
 PYEOF
@@ -219,6 +243,11 @@ PYEOF
     log "could not find $HOST by DNS or by network name — rips bound for it will stage on the card instead"
     rm -f "$CRED"; continue
   fi
+  # The address came from getent or a NetBIOS answer, not from the database -- but it
+  # is about to become a mount option, so it has to look like an address.
+  case "$ADDR" in
+    *[!0-9A-Fa-f.:]*) log "ignoring an address that is not one: $ADDR"; ADDR="$HOST" ;;
+  esac
   [ "$ADDR" != "$HOST" ] && BASE="$BASE,ip=$ADDR"
 
   DONE=0; ERR=""

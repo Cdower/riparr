@@ -29,6 +29,27 @@ previous release is kept so `sudo riparr-update.sh --rollback` is a symlink swap
 `server/requirements.txt` now carries hashes and is installed with `--require-hashes`.
 See `docs/security.md` for the threat model and the list of doors.
 
+**Restart, shut down and the Wi-Fi watchdog's reboot are now things a box can be told
+not to do.** `RIPARR_ALLOW_POWER=0` in `riparr.conf` (or `/etc/default/riparr`) turns
+the web page's Restart and Shut down off at the root side as well as hiding them, and
+hands the physical power button back to the system. The Wi-Fi watchdog now watches the
+interface that carries the default route instead of assuming `wlan0`, does nothing at
+all when that interface is wired (a Raspberry Pi on Ethernet used to reboot itself every
+twelve minutes because `wlan0` existed and carried nothing), and only reboots when
+`RIPARR_NETWATCH_REBOOT=1` as well as the page's "restart as a last resort" switch. The
+appliance keeps all three on; a shared host gets them off from the installer. The
+watchdog's decisions are plain functions with their own test.
+
+**Root-side helpers no longer trust what the service wrote.** The Wi-Fi helper refuses an
+SSID that is not a valid SSID (a newline inside one would have ended the `ssid=` line and
+started a directive of the attacker's choosing) and a key that is not a 64-digit PSK; the
+library mount refuses a host, share, domain, user or password that could change what the
+mount command or the credentials file means; the watchdog reads its thresholds as
+numbers instead of `eval`-ing them; and every root helper runs the system `python3`,
+never the service's virtualenv. The Wi-Fi helper also had a mismatched heredoc since the
+last edit to it, so it had not been writing any config at all -- found by the test
+written for the above.
+
 **A box can now stream a CPU profile to Grafana Cloud.** Settings → General has a new
 Performance profiling section: paste in the Profiles URL, stack ID and a token, press
 "Save and send a test profile", and the box sends which of its own functions are using

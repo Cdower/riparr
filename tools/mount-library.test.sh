@@ -123,6 +123,20 @@ echo "a mount that was there before the database changed is replaced, not kept"
 run
 check "the stale mount is gone" "$(mounted)" "/srv/library //nas-a/Media;"
 
+echo "a row that could change what the mount command means is skipped, not cleaned up"
+# The rows are the service's to write and this script runs as root. A host with a
+# comma would become a mount option; a password with a newline would add a line to
+# the credentials file. Each is refused by name and the good share still mounts.
+: > "$STATE"; run; BEFORE=$(mounted)
+read -r H1 H2 H3 < <(dbpy "print(db.add_share('H1', 'nas-c,uid=0', 'Media', None, None), db.add_share('H2', 'nas-d', 'Media', 'u', 'pw\\nextra=line'), db.add_share('H3', 'nas-e', 'Med,ia', None, None))")
+dbpy "db.set('movie_share_id', $H1); db.set('tv_share_id', $H2); db.set('music_share_id', $H3)"
+run
+check "the hostile rows are not mounted, the default still is" "$(mounted)" "$BEFORE"
+check "each refusal is named" "$(bash "$REPO/tools/mount-library.sh" 2>&1 >/dev/null | grep -c 'skipped')" "3"
+dbpy "db.set('movie_share_id', None); db.set('tv_share_id', None); db.set('music_share_id', None); [db.delete_share(i) for i in ($H1, $H2, $H3)]"
+run
+check "and nothing else was affected" "$(mounted)" "$BEFORE"
+
 echo "a wrong share that will not unmount is not mounted over"
 : > "$STATE"; printf '%s\t%s\n' "$MOUNT" "//stale/Old" >> "$STATE"
 touch "$T/umount-fails"

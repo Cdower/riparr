@@ -5014,6 +5014,12 @@ async function boot() {
   try { me = await api.get("/api/auth/me"); } catch (e) { showGate(); return; }
   if (!me.username) { showGate(); return; }
   $("#menu-who").textContent = me.username;
+  // Power controls are a feature of the box, not of the page: a host with
+  // RIPARR_ALLOW_POWER=0 refuses them at the root side, so they are not shown at all.
+  const powerOn = !me.features || me.features.power !== false;
+  for (const sel of ["#sys-reboot", "#sys-poweroff", "#user-menu .menu-label"]) {
+    const el = $(sel); if (el) el.hidden = !powerOn;
+  }
 
   if (!setup.complete) {
     wizard.step = 1;                       // account exists; resume at MakeMKV
