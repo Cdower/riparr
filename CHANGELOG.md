@@ -84,6 +84,20 @@ something it missed. The sandbox was checked by scoring, by a system-call trace 
 service and its children through the whole test suite, and against the code's device and
 path needs -- not yet on a board with a real drive; `docs/security.md` says how to.
 
+**The installer says what kind of machine it is on, says what it changes, and can take it
+all back.** On a board (a `riparr.conf` on the boot partition, or any device-tree model)
+it is an appliance and the machine is set up around Riparr as before: the TCP fast-fail
+sysctl, avahi owning the `.local` name and advertising the service, power controls on,
+the watchdog allowed to reboot. Anywhere else it is a host: none of that is touched and
+the web page cannot power the machine. `--appliance` and `--host` override the guess;
+`--no-sysctl`, `--no-mdns`, `--no-power` and `--no-netwatch-reboot` turn one thing off
+whatever the mode, through `/etc/default/riparr`, which every unit reads after the boot
+partition's `riparr.conf`. Every change outside Riparr's own directories is printed as it
+is made and listed at the end. `tools/uninstall.sh` (or `install.sh --undo`) removes the
+units, the helpers, the sysctl, the mDNS handoff and advert, the operator file and the
+watchdog and Bluetooth drop-ins, leaves your own drop-ins, and with `--purge` also removes
+the code, the data and the two accounts. Both are idempotent and tested.
+
 **A box can now stream a CPU profile to Grafana Cloud.** Settings → General has a new
 Performance profiling section: paste in the Profiles URL, stack ID and a token, press
 "Save and send a test profile", and the box sends which of its own functions are using

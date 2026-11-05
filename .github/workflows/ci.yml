@@ -467,6 +467,13 @@ jobs:
           bash packaging/netwatch.test.sh
           bash packaging/wifi-apply.test.sh
 
+      # install.sh's appliance/host decision and flags, and uninstall.sh against a
+      # fake root: everything the installer writes outside Riparr's directories is
+      # gone afterwards and the operator's drop-ins are not.
+      - name: The installer decides, says, and can undo
+        run: |
+          sudo bash tools/install.test.sh
+
       # systemd-analyze security, offline, for every shipped service, against the
       # ceilings in packaging/security-thresholds.txt. A directive dropped by accident
       # moves the score; the score moving up fails the build.
