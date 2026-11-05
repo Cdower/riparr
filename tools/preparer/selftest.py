@@ -484,13 +484,39 @@ def test_bands():
     print("  the rule lives in core.pi_can_join, keyed on boards.Board.bands")
 
 
+def test_forget_host_keys():
+    group("forgetting an old card's host key")
+    import os, shutil, tempfile
+    import core
+    if not shutil.which("ssh-keygen"):
+        print("  skipped: no ssh-keygen on this host")
+        return
+    d = tempfile.mkdtemp()
+    try:
+        f = os.path.join(d, "known_hosts")
+        key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+        with open(f, "w") as fh:
+            fh.write("riparr.local %s\nnas.local %s\n" % (key, key))
+        check("the box's names", core.host_key_names(" Riparr "), ["riparr", "riparr.local"])
+        check("the old card is forgotten",
+              core.forget_host_keys(f, core.host_key_names("riparr")), 1)
+        check("someone else's host is kept", "nas.local" in open(f).read(), True)
+        check("forgetting twice is harmless",
+              core.forget_host_keys(f, core.host_key_names("riparr")), 0)
+        check("a missing file is harmless",
+              core.forget_host_keys(os.path.join(d, "nope"), ["x"]), 0)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
     print("Riparr Preparer selftest — host is %s, card writing %s"
           % (hostos.NAME, "supported" if hostos.CAN_WRITE else "not supported"))
     for fn in (test_contract, test_device_ids, test_partition_names,
                test_mount_matching, test_cmdline, test_sink_blocking,
                test_partition_layout, test_cloud_init, test_disk_candidates,
-               test_boards, test_conf, test_open_wifi, test_bands):
+               test_boards, test_conf, test_open_wifi, test_bands,
+               test_forget_host_keys):
         fn()
     print()
     if FAILED:

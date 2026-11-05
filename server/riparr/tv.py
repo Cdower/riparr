@@ -56,11 +56,22 @@ API = "https://api.tvmaze.com"
 
 # ── what counts as an episode ────────────────────────────────────────────────
 
-# Nothing shorter than this is ever an episode. A ten-minute featurette is common on a
-# season disc and a ten-minute episode essentially is not, outside of shorts nobody
-# presses to Blu-ray. Deliberately below the 22 minutes of a half-hour sitcom so that
-# the *clustering* decides what an episode is, not this number.
+# Nothing shorter than this is an ordinary episode. A ten-minute featurette is common
+# on a season disc; the *clustering* decides what an episode is above this line.
 EPISODE_MIN_SECONDS = 900
+
+# ...but short episodes exist, and pressed to disc constantly: every eleven-minute
+# cartoon (SpongeBob, Adventure Time, Regular Show), seven-minute shorts collections,
+# webisodes. A hard floor at fifteen minutes threw those whole discs away as "extras",
+# one of the commonest TV complaints on the MakeMKV forums. So titles from five to
+# fifteen minutes are a second tier: they are the episodes only when there is no group
+# of longer ones, or when they hold far more of the disc than the longer group does --
+# see `_episode_cluster`. Ranking everything together by count let ten 8-minute
+# featurettes outvote six real episodes; ranking by running time let a five-hour
+# play-all outvote the thirteen episodes it contains (the real Samurai Jack disc).
+SHORT_EPISODE_MIN_SECONDS = 300
+SHORT_TIER_MIN_COUNT = 4
+SHORT_TIER_DOMINANCE = 2.0
 
 # Two titles this far apart in runtime are still the same show. Episodes of one season
 # vary by a minute or two either side; the tolerance has to cover that without being so
@@ -74,6 +85,11 @@ MIN_EPISODES = 2
 
 # A title this many times the episode length is the play-all, not an episode.
 PLAY_ALL_RATIO = 2.5
+
+# Without a segment map, a play-all is recognised by adding up: it runs about as long
+# as the episodes it strings together. Play-alls drop the per-episode recap and credits,
+# so they come in somewhat short; a film is nowhere near the sum of its featurettes.
+PLAY_ALL_SUM_LOW, PLAY_ALL_SUM_HIGH = 0.80, 1.10
 
 # Past this, one title is not one film. See `looks_like_blob`.
 BLOB_MIN_SECONDS = 12600
@@ -173,18 +189,31 @@ def _dedup(candidates):
     before it runs and costs one unticked box. Merging two distinct episodes deletes one
     of them from the season silently, and the user finds out much later, with the disc
     back in its box. So this errs towards duplicates, and `plan_warnings` says it did.
+
+    Between copies of the same footage, the one with more audio tracks, then more
+    chapters, is the episode. Avatar Book Two disc 1 carries episode 6 three times over
+    one stream file: 00254.mpls with a single track (the commentary), 00606.mpls with the
+    four normal tracks, and 01606.mpls with those four and the commentary after them.
+    00254 and 00606 are the same length, and the lower title number won the tie: the
+    season would have been filed with commentary in place of sound.
     """
     if not _dedup_signal(candidates):
         return list(candidates)
     kept = []
-    for t in sorted(candidates, key=lambda x: (-x["seconds"], x["index"])):
+    for t in sorted(candidates, key=lambda x: (-x["seconds"], -x.get("audio", 0),
+                                               -x.get("chapters", 0), x["index"])):
         segs = set(parse_segments(t.get("segments")))
         src = (t.get("source") or "").strip().lower()
         dup = False
-        for k in kept:
+        for i, k in enumerate(kept):
             ksegs = set(parse_segments(k.get("segments")))
             if segs and ksegs:
                 if segs & ksegs:
+                    # The same footage exactly: a second of rounding must not let the
+                    # commentary copy beat the one with the sound.
+                    if segs == ksegs and ((t.get("audio", 0), t.get("chapters", 0))
+                                          > (k.get("audio", 0), k.get("chapters", 0))):
+                        kept[i] = t
                     dup = True
                     break
             elif src and src == (k.get("source") or "").strip().lower():
@@ -205,7 +234,7 @@ def _largest_cluster(titles):
     it works the same for a 22-minute sitcom and a 55-minute drama without being told
     which it is looking at.
     """
-    best = []
+    best, best_key = [], None
     for anchor in titles:
         lo = anchor["seconds"] * (1 - CLUSTER_TOLERANCE)
         hi = anchor["seconds"] * (1 + CLUSTER_TOLERANCE)
@@ -214,9 +243,26 @@ def _largest_cluster(titles):
         # three 42-minute episodes and three 8-minute featurettes should resolve to the
         # episodes. (Featurettes rarely cluster this tightly, but ties are cheap to
         # break correctly and expensive to get wrong.)
-        if (len(group), anchor["seconds"]) > (len(best), best[0]["seconds"] if best else 0):
-            best = group
+        key = (len(group), anchor["seconds"])
+        if not best or key > best_key:
+            best, best_key = group, key
     return best
+
+
+def _episode_cluster(titles):
+    """The episodes' cluster, with short episodes as a second tier. See
+    SHORT_EPISODE_MIN_SECONDS for why it is two tiers rather than one ranking."""
+    long_ = _largest_cluster([t for t in titles if t["seconds"] >= EPISODE_MIN_SECONDS])
+    short = _largest_cluster([t for t in titles
+                              if SHORT_EPISODE_MIN_SECONDS <= t["seconds"] < EPISODE_MIN_SECONDS])
+    if len(short) < MIN_EPISODES:
+        return long_
+    if len(long_) < MIN_EPISODES:
+        return short
+    if (len(short) >= SHORT_TIER_MIN_COUNT and sum(t["seconds"] for t in short)
+            > SHORT_TIER_DOMINANCE * sum(t["seconds"] for t in long_)):
+        return short
+    return long_
 
 
 def _find_play_all(titles, episode_seconds):
@@ -253,6 +299,76 @@ def _find_play_all(titles, episode_seconds):
     return best
 
 
+def _furniture(titles):
+    """Segments shared by so many titles they cannot belong to any one episode.
+
+    An episode's own segment turns up in a handful of titles at most: the episode, a
+    second cut of it, the play-all. Something in four or more titles, and in at least
+    two-fifths of them, is a logo or a bumper.
+    """
+    count = {}
+    for t in titles:
+        for s in set(parse_segments(t.get("segments"))):
+            count[s] = count.get(s, 0) + 1
+    need = max(4, int(0.4 * len(titles) + 0.999))
+    return {s for s, n in count.items() if n >= need}
+
+
+def _without(title, furniture):
+    """A copy of `title` with the furniture segments taken out of its map -- unless
+    that would leave it with none, in which case it is left as it was."""
+    segs = [s for s in parse_segments(title.get("segments")) if s not in furniture]
+    if not segs or len(segs) == len(parse_segments(title.get("segments"))):
+        return title
+    out = dict(title)
+    out["segments"] = ",".join(str(s) for s in segs)
+    return out
+
+
+def _held(title, others):
+    """The other titles whose segments all lie inside this one's segment map."""
+    segs = set(parse_segments(title.get("segments")))
+    if not segs:
+        return []
+    out = []
+    for o in others:
+        if o["index"] == title["index"]:
+            continue
+        osegs = set(parse_segments(o.get("segments")))
+        if osegs and osegs <= segs and osegs != segs:
+            out.append(o)
+    return out
+
+
+def _really_plays_all(play_all, episodes, by_length=True):
+    """Is this long title actually the episodes end to end, or just something long?
+
+    `_find_play_all` picks the longest title well past episode length, which on a
+    season disc is the play-all -- and on a *film* disc with two or three featurettes is
+    the film. Taken at its word, a film plus a 25-minute making-of and a 26-minute
+    documentary read as a two-episode season with the film excluded as its play-all
+    (shipped in 0.6.1, found 2026-10-12 testing against a real season disc). So the
+    claim has to be checked against the thing it claims to contain:
+
+    * its segment map holds at least two of the episodes' segments (Blu-ray), or
+    * it runs about as long as the episodes added together (a DVD has no segment map).
+    """
+    if not play_all or not episodes:
+        return False
+    segs = set(parse_segments(play_all.get("segments")))
+    if segs:
+        held = sum(1 for e in episodes
+                   if set(parse_segments(e.get("segments"))) and
+                   set(parse_segments(e.get("segments"))) <= segs)
+        if held >= 2:
+            return True
+    if not by_length:
+        return False
+    total = sum(e["seconds"] for e in episodes)
+    return bool(total) and (PLAY_ALL_SUM_LOW * total <= play_all["seconds"]
+                            <= PLAY_ALL_SUM_HIGH * total)
+
+
 def _order_by_segments(episodes, play_all):
     """Order the episodes the way the play-all plays them, or None if it can't say.
 
@@ -286,6 +402,49 @@ def _order_by_segments(episodes, play_all):
     return [t for _, t in sorted(placed, key=lambda x: x[0])]
 
 
+def _beyond_agrees(ordered, beyond):
+    """Whether the playlist numbers back up where the segment numbers put the episodes
+    past the play-all: all playlists, numbered upward in that order, after the last of
+    the play-all's own run in the same block."""
+    if not beyond:
+        return False
+    if not all((t.get("source") or "").lower().endswith(".mpls") for t in beyond):
+        return False
+    nums = [_source_number(t) for t in beyond]
+    if None in nums or nums != sorted(nums) or len(set(nums)) != len(nums):
+        return False
+    run = [n for n in (_source_number(t) for t in ordered if t not in beyond)
+           if n is not None and n // 100 == nums[0] // 100]
+    return bool(run) and nums[0] > max(run)
+
+
+def _order_past_play_all(episodes, play_all):
+    """Order a disc whose play-all holds only some of its episodes, or None.
+
+    Samurai Jack season 5: the play-all runs episodes 1-8 and stops; 9 and 10 sit after
+    it. When the play-all lists its segments in ascending order -- the disc was authored
+    with segment numbers in broadcast order -- and every episode is one segment, the
+    segment numbers themselves are that order, so episodes the play-all leaves out slot
+    in where their numbers fall. Anything less regular than that is not trusted.
+    """
+    if not play_all:
+        return None
+    order = parse_segments(play_all.get("segments"))
+    if not order or order != sorted(order) or len(set(order)) != len(order):
+        return None
+    keys = []
+    for t in episodes:
+        segs = parse_segments(t.get("segments"))
+        if len(segs) != 1:
+            return None
+        keys.append((segs[0], t))
+    if len({k for k, _ in keys}) != len(keys):
+        return None
+    if not any(k in set(order) for k, _ in keys):
+        return None
+    return [t for _, t in sorted(keys, key=lambda x: x[0])]
+
+
 def _order_by_source(episodes):
     """Order by .mpls number, or None if the filenames don't support it.
 
@@ -309,10 +468,20 @@ def analyse(titles, min_seconds=120):
     if not titles:
         return None
 
-    floor = max(int(min_seconds or 0), EPISODE_MIN_SECONDS)
+    floor = max(int(min_seconds or 0), SHORT_EPISODE_MIN_SECONDS)
     candidates = [t for t in titles if t.get("seconds", 0) >= floor]
     if len(candidates) < MIN_EPISODES:
         return None
+    # Segments every other title starts with -- a studio logo, a one-second bumper --
+    # are the disc's furniture, not part of any episode, and are taken out of every
+    # map before anything reads them. Avatar: The Last Airbender's Blu-ray puts segment
+    # 1100 (one second) in front of every episode's "with the opening" version and at
+    # the head of the play-all; left in, it made every one of those versions "overlap"
+    # every other, so de-duplication kept a random mix, and the play-all placed
+    # whichever one it kept first as episode one.
+    furniture = _furniture(candidates)
+    if furniture:
+        candidates = [_without(t, furniture) for t in candidates]
 
     # Order matters here and it is not the obvious order. Deduplicating first looks
     # right and is wrong: the play-all's segment map contains every episode's segments,
@@ -324,15 +493,33 @@ def analyse(titles, min_seconds=120):
     # to find its yardstick is safe to do on the raw list, because duplicates cluster
     # with the episodes they duplicate -- they make that cluster larger and its median
     # no less correct.
-    rough = _largest_cluster(candidates)
+    rough = _episode_cluster(candidates)
     if len(rough) < MIN_EPISODES:
         return None
     play_all = _find_play_all(candidates, _median([t["seconds"] for t in rough]))
+    if play_all and not _really_plays_all(play_all, _dedup(rough)):
+        # Something long that is not the episodes strung together. Longer than every
+        # "episode" put together, it is the reason the disc exists -- a film, and the
+        # cluster is its featurettes. Shorter, it is a bonus feature sitting on a real
+        # season disc (a documentary beside six episodes) and simply is not the play-all.
+        if play_all["seconds"] > sum(t["seconds"] for t in _dedup(rough)):
+            return None
+        play_all = None
 
-    remaining = [t for t in candidates
-                 if not play_all or t["index"] != play_all["index"]]
+    # A title whose segment map wholly holds two or more other titles is a compilation
+    # of them, at any length: the play-all of a two-episode disc (2x, under the ratio
+    # above), or a "premiere movie" sold beside its own parts. It must go before the
+    # merge, for the same reason the play-all does -- it overlaps everything it holds
+    # and, as the longest, would absorb them. Found when a two-episode play-all at
+    # exactly 2x came back from analyse() as no season at all.
+    compilations = [t for t in candidates
+                    if t is not play_all and len(_held(t, candidates)) >= 2]
+    if not play_all and compilations:
+        play_all = max(compilations, key=lambda t: t["seconds"])
+    gone = {t["index"] for t in compilations} | {(play_all or {}).get("index")}
+    remaining = [t for t in candidates if t["index"] not in gone]
     unique = _dedup(remaining)
-    cluster = _largest_cluster(unique)
+    cluster = _episode_cluster(unique)
     if len(cluster) < MIN_EPISODES:
         return None
     episode_seconds = _median([t["seconds"] for t in cluster])
@@ -344,10 +531,77 @@ def analyse(titles, min_seconds=120):
                if t["index"] != (play_all or {}).get("index")
                and t not in cluster
                and DOUBLE_LOW <= t["seconds"] / float(episode_seconds) <= DOUBLE_HIGH]
+    # The last disc of a season often carries two episodes and a play-all, and that
+    # play-all is exactly twice an episode -- the same length as a double-length
+    # premiere. It sits below PLAY_ALL_RATIO, so it arrives here. If it holds the other
+    # episodes' segments, or (with no segment map) runs as long as both of them, it is
+    # the play-all, and ripping it as E03-E04 would put both episodes on disk twice.
+    for t in list(doubles):
+        # By length only when there are exactly two: against three or more episodes a
+        # 2x title cannot be their sum, and a real double has nothing to add up to.
+        if _really_plays_all(t, cluster, by_length=len(cluster) == 2):
+            doubles.remove(t)
+            if not play_all:
+                play_all = t
     episodes = sorted(cluster + doubles, key=lambda t: t["index"])
+
+    # The play-all also says which titles are the season. An episode-length title with
+    # a segment map and none of it in the play-all is something else the disc carries --
+    # a bonus episode, a pilot, a 21-minute documentary -- so it is offered as an extra
+    # rather than numbered. Found on Samurai Jack season 2: a bare 02630.m2ts counted as
+    # a fourteenth episode, which also cost the disc its segment order, and the fallback
+    # (playlist numbering) filed episode 12 as E01. Only when the play-all holds most of
+    # the cluster, and runs as long as the titles it holds: one that is longer than its
+    # map accounts for has a map we can't read fully, and then nothing is left out.
+    #
+    # But not a *sibling* of the episodes: a playlist numbered in the same run as them.
+    # Samurai Jack season 5's play-all stops at episode 8, and episodes 9 and 10 are
+    # 00808.mpls and 00809.mpls, right after 00800-00807. Excluding everything outside
+    # the play-all filed them as unticked extras, with high confidence, unattended. A
+    # bonus feature is the other shape: a bare .m2ts (season 2's 02630.m2ts), or a
+    # playlist from another block.
+    outside = []
+    pa_segs = set(parse_segments((play_all or {}).get("segments")))
+    if pa_segs:
+        inside_blocks = [n // 100 for n in (_source_number(e) for e in episodes
+                         if set(parse_segments(e.get("segments"))) & pa_segs)
+                         if n is not None]
+        block = max(set(inside_blocks), key=inside_blocks.count) if inside_blocks else None
+
+        def sibling(e):
+            n = _source_number(e)
+            return ((e.get("source") or "").lower().endswith(".mpls")
+                    and n is not None and block is not None and n // 100 == block)
+        outs = [e for e in episodes if parse_segments(e.get("segments"))
+                and not set(parse_segments(e.get("segments"))) & pa_segs
+                and not sibling(e)]
+        # What the play-all actually holds -- not its siblings beyond it, which it
+        # cannot be expected to run as long as.
+        held = sum(e["seconds"] for e in episodes
+                   if set(parse_segments(e.get("segments"))) & pa_segs)
+        if (outs and len(episodes) - len(outs) >= max(MIN_EPISODES, len(outs) + 1)
+                and PLAY_ALL_SUM_LOW <= play_all["seconds"] / float(held or 1)
+                <= PLAY_ALL_SUM_HIGH):
+            outside = outs
+            episodes = [e for e in episodes if e not in outs]
+            doubles = [d for d in doubles if d not in outs]
 
     ordered = _order_by_segments(episodes, play_all)
     order_source = "segments"
+    confidence = None
+    beyond = []
+    if ordered is None:
+        ordered = _order_past_play_all(episodes, play_all)
+        if ordered is not None:
+            pa = set(parse_segments(play_all.get("segments")))
+            beyond = [t for t in ordered
+                      if not set(parse_segments(t.get("segments"))) & pa]
+            # Trusted as far as the play-all only if the playlist numbers say the same
+            # thing as the segment numbers: every episode past it a playlist, numbered
+            # upward in the order placed, after the play-all's own run. Two independent
+            # records agreeing is a fact; one alone is a good guess, and is shown.
+            confidence = "high" if _beyond_agrees(ordered, beyond) else "medium"
+            beyond = [t["index"] for t in beyond]
     if ordered is None:
         ordered = _order_by_source(episodes)
         order_source = "source"
@@ -358,6 +612,12 @@ def analyse(titles, min_seconds=120):
     chosen = {t["index"] for t in ordered}
     if play_all:
         chosen.add(play_all["index"])
+    # Duplicate playlists and compilations are the episodes again, not extras. Listed
+    # as extras, the six "without the trailer" copies of a season appeared as six
+    # forty-minute bonus features -- harmless while extras could only be looked at, and
+    # a way to rip the season twice once they could be ticked.
+    chosen |= {t["index"] for t in remaining if t not in unique}
+    chosen |= {t["index"] for t in compilations}
     # Extras are listed at the user's own floor, not the episode floor: a ten-minute
     # featurette is exactly the thing somebody wants to see was found and skipped.
     extras = [t for t in titles
@@ -368,11 +628,14 @@ def analyse(titles, min_seconds=120):
         "episodes": ordered,
         "play_all": play_all,
         "extras": extras,
-        "duplicates": [t for t in remaining if t not in unique],
+        "duplicates": [t for t in remaining if t not in unique]
+                      + [t for t in compilations if t is not play_all],
         "dedup_signal": _dedup_signal(remaining),
         "doubles": [t["index"] for t in doubles],
+        "outside_play_all": [t["index"] for t in outside],
+        "beyond_play_all": beyond,
         "order_source": order_source,
-        "confidence": ORDER_TRUST[order_source],
+        "confidence": confidence or ORDER_TRUST[order_source],
         "episode_seconds": int(episode_seconds),
     }
 
@@ -411,8 +674,28 @@ def looks_like_blob(titles, min_seconds=120):
 
 # ── what the disc calls itself ───────────────────────────────────────────────
 
-_SEASON_RE = re.compile(r"(?:^|[\s_\-])s(?:eason)?[\s_\-]*(\d{1,2})(?=$|[\s_\-]|d\d)", re.I)
+_NUMBER_WORDS = {w: n for n, w in enumerate(
+    "one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+    "fifteen sixteen seventeen eighteen nineteen twenty".split(), 1)}
+_ORDINALS = {w: n for n, w in enumerate(
+    "first second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth "
+    "thirteenth fourteenth fifteenth sixteenth seventeenth eighteenth nineteenth "
+    "twentieth".split(), 1)}
+_NUM = r"(\d{1,2}|%s)" % "|".join(_NUMBER_WORDS)
+# "Season", and the other words a box set uses for one: Avatar's are "Book One", the
+# BBC's "Series 3", anime and older US sets "Volume 2". `S01` keeps its short form.
+_SEASON_RE = re.compile(
+    r"(?:^|[\s_\-:.])(?:s(?:eason)?|series|book|volume|vol)[\s_\-.]*%s"
+    r"(?=$|[\s_\-:.,]|d\d)" % _NUM, re.I)
+# ...and the ordinal form disc names use: "The Complete First Season".
+_ORDINAL_RE = re.compile(r"\b(%s)[\s_\-]+(?:season|series|book|volume)\b"
+                         % "|".join(_ORDINALS), re.I)
 _DISC_RE = re.compile(r"(?:^|[\s_\-])d(?:isc|isk)?[\s_\-]*(\d{1,2})(?=$|[\s_\-])", re.I)
+
+
+def _number(word):
+    w = word.lower()
+    return int(w) if w.isdigit() else _NUMBER_WORDS.get(w) or _ORDINALS.get(w)
 
 
 def season_from_label(label):
@@ -426,9 +709,9 @@ def season_from_label(label):
     s = (label or "").strip()
     if not s:
         return None, None
-    season = _SEASON_RE.search(s)
+    season = _SEASON_RE.search(s) or _ORDINAL_RE.search(s)
     disc = _DISC_RE.search(s)
-    return (int(season.group(1)) if season else None,
+    return (_number(season.group(1)) if season else None,
             int(disc.group(1)) if disc else None)
 
 
@@ -439,6 +722,14 @@ def series_name_from_label(label):
     are specific to a season disc and would otherwise poison a title search.
     """
     s = (label or "").strip()
+    # Everything before the season marker is the show: "Avatar: The Last Airbender Book
+    # One: Water Disc 1" is "Avatar: The Last Airbender", and the book's subtitle after
+    # it is not part of the name. Taking the marker out and keeping the rest searched
+    # TVmaze for "Avatar Book 1 Water" and found nothing.
+    m = _SEASON_RE.search(s) or _ORDINAL_RE.search(s)
+    if m and m.start() > 0:
+        s = s[:m.start()]
+        s = re.sub(r"[\s_\-:]*(?:the[\s_]+)?complete[\s_]*$", "", s, flags=re.I)
     s = _SEASON_RE.sub(" ", s)
     s = _DISC_RE.sub(" ", s)
     s = s.replace("_", " ").replace(".", " ")
@@ -506,9 +797,117 @@ def search_series(name, limit=6):
             "network": ((show.get("network") or show.get("webChannel") or {})
                         or {}).get("name") or "",
             "score": row.get("score") or 0,
+            "runtime": show.get("averageRuntime") or show.get("runtime") or 0,
         })
     with _cache_lock:
         _show_cache[key] = (time.time(), out)
+    return out
+
+
+def pick_series(options, episode_seconds=None, season=None, facts=None, named=None):
+    """The best of TVmaze's candidates for a disc, or None.
+
+    TVmaze's score is a text match, and two shows with the same name score the same:
+    "Avatar: The Last Airbender" is both the 2005 cartoon and Netflix's 2024 remake, at
+    1.6 each, and taking the first filed the cartoon's Blu-ray under the remake. Among
+    the candidates within a whisker of the best score, the one whose usual episode
+    length is nearest the disc's wins -- 22-minute episodes are not an hour-long show.
+    """
+    if not options:
+        return None
+    # The second witness first. What Wikidata finds by the same name, on its own: when
+    # some of TVmaze's candidates are among those shows, the others are not this one.
+    if named:
+        ids = {i for s in named for i in s.get("tvmaze") or []}
+        both = [o for o in options if o["id"] in ids]
+        options = both or options
+    # A show Wikidata says has fewer seasons than the disc's
+    # season number is not this show, however well its name matched. Only ever used to
+    # rule out -- if it would rule out everything, it is the witness that is wrong.
+    if facts and season:
+        possible = [o for o in options
+                    if not (facts.get(o["id"]) or {}).get("seasons")
+                    or facts[o["id"]]["seasons"] >= season]
+        options = possible or options
+    best = options[0].get("score") or 0
+    close = [o for o in options if (o.get("score") or 0) >= best - 0.05]
+    if len(close) < 2 or not episode_seconds:
+        return options[0]
+    minutes = episode_seconds / 60.0
+
+    def miss(o):
+        rt = o.get("runtime") or 0
+        return abs(rt - minutes) / minutes if rt else 9e9
+    return min(close, key=miss)
+
+
+def _norm_title(s):
+    s = re.sub(r"\(\s*(?:part\s*)?\d+\s*\)", " ", (s or "").lower())
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return " ".join(s.split())
+
+
+def _same_title(a, b):
+    """Whether two sources' names for an episode are the same name. Containment either
+    way, because one source's "Book One: Water - Chapter One: The Boy in the Iceberg"
+    is the other's "The Boy in the Iceberg"; and a floor, so "Jack" is no evidence."""
+    a, b = _norm_title(a), _norm_title(b)
+    if len(a) < 6 or len(b) < 6:
+        return False
+    if a == b or a in b or b in a:
+        return True
+    # The same words in another order: "Winter Solstice, Part 1: The Spirit World"
+    # against "The Spirit World (Winter Solstice, Part 1)". Every word of the shorter,
+    # bar the little ones, in the longer -- and at least two of them.
+    small = {"the", "a", "an", "of", "and", "in", "on", "to", "part"}
+    wa, wb = set(a.split()) - small, set(b.split()) - small
+    short, long_ = (wa, wb) if len(wa) <= len(wb) else (wb, wa)
+    return len(short) >= 2 and short <= long_
+
+
+def cross_check(rows, episode_list, witness_titles):
+    """Hold the plan's numbering up against a second source's episode titles.
+
+    For each planned episode the witness has a title for, one of three things is true:
+    it names the same episode TVmaze does (agreement); it names an episode TVmaze has
+    at a *different* number (a shift -- the disc is not where the plan puts it); or it
+    names nothing TVmaze has, which is the two sources' house styles differing ("Episode
+    I" against "The Beginning (1)") and says nothing either way.
+
+    Returns {"verdict": "agree" | "shifted" | "silent", "agree": n, "compared": n,
+    "offset": k or None, "filled": n}, and fills in any title TVmaze left empty.
+    """
+    out = {"verdict": "silent", "agree": 0, "compared": 0, "offset": None, "filled": 0}
+    if not witness_titles:
+        return out
+    by_number = {}
+    for e in episode_list or []:
+        if not e.get("special"):
+            by_number[(e["season"], e["number"])] = e.get("name") or ""
+    shifts = []
+    for r in rows:
+        if r.get("extra") or not r.get("include", True):
+            continue
+        n, season = r.get("episode"), r.get("season")
+        w = witness_titles.get(n)
+        if not w:
+            continue
+        if not r.get("episode_title"):
+            r["episode_title"] = w
+            out["filled"] += 1
+            continue
+        if _same_title(w, by_number.get((season, n), "")):
+            out["agree"] += 1
+            continue
+        match = [num for (s, num), name in by_number.items()
+                 if s == season and num != n and _same_title(w, name)]
+        if len(match) == 1:
+            shifts.append(match[0] - n)
+    out["compared"] = out["agree"] + len(shifts)
+    if shifts and len(shifts) >= 2 and len(set(shifts)) == 1 and len(shifts) > out["agree"]:
+        out["verdict"], out["offset"] = "shifted", shifts[0]
+    elif out["agree"] and len(shifts) <= out["agree"] // 3:
+        out["verdict"] = "agree"
     return out
 
 
@@ -552,9 +951,122 @@ def episodes(series_id, include_specials=True):
     return out
 
 
+_dvd_cache = {}
+
+
+def dvd_order(series_id):
+    """TVmaze's DVD-release order for a series, or {} if it has none, or None if that
+    couldn't be found out.
+
+    The one question about a season disc that reading the disc cannot settle is whether
+    the disc runs in broadcast order. Most shows do; a few were released in production
+    order instead -- Firefly opens with "Serenity", which every guide numbers S01E11.
+    TVmaze publishes that second order as an "alternate list" (no account, no key), so
+    it is looked up rather than asked. Returns {(dvd season, dvd number): episode} where
+    episode is the broadcast-order {"season", "number", "name"} that position holds.
+
+    {} and None are different answers and the caller treats them differently: {} is
+    "TVmaze knows this show and it has no other order", which settles the question; None
+    is "couldn't ask", which leaves it open.
+    """
+    if not series_id:
+        return None
+    sid = int(series_id)
+    with _cache_lock:
+        hit = _dvd_cache.get(sid)
+        if hit and time.time() - hit[0] < CACHE_TTL:
+            return hit[1]
+    try:
+        lists = _get("%s/shows/%d/alternatelists" % (API, sid)) or []
+        chosen = next((x for x in lists if x.get("dvd_release")), None)
+        out = {}
+        if chosen:
+            raw = _get("%s/alternatelists/%d/alternateepisodes?embed=episodes"
+                       % (API, int(chosen["id"]))) or []
+            for a in raw:
+                aired = ((a.get("_embedded") or {}).get("episodes") or [None])[0]
+                if (a.get("season") is None or a.get("number") is None or not aired
+                        or aired.get("season") is None or aired.get("number") is None):
+                    continue
+                out[(int(a["season"]), int(a["number"]))] = {
+                    "season": int(aired["season"]), "number": int(aired["number"]),
+                    "name": aired.get("name") or a.get("name") or ""}
+    except Exception as e:
+        log.info("TVmaze DVD order for %s failed: %s", series_id, e)
+        return None
+    with _cache_lock:
+        _dvd_cache[sid] = (time.time(), out)
+    return out
+
+
+def dvd_map_for(dvd, season):
+    """The part of a DVD order that concerns one disc season, as {position: episode},
+    or {} when there is nothing that differs from broadcast order.
+
+    An identical list is dropped rather than carried: it changes no file, and a plan
+    that says "named from the DVD order" when nothing moved is noise.
+    """
+    if not dvd or season is None:
+        return {}
+    m = {n: e for (s, n), e in dvd.items() if s == season}
+    if all(e["season"] == season and e["number"] == n for n, e in m.items()):
+        return {}
+    return m
+
+
+def number_rows(rows, season, start, episode_list=None, dvd_map=None, typed=()):
+    """Number and name the episodes that will be written, in the order given.
+
+    Two numbers per row. `position` is where the episode sits in the season *as the
+    discs run* -- E01 on the first disc, carried on by the next -- and is what disc-to-
+    disc continuation and the "first episode" control count in. `episode` is the number
+    the file is named with, which is the broadcast number: the same as `position` for
+    almost every show, and, for a show whose DVD order differs, whatever broadcast
+    number the DVD position holds. Plex, Jellyfin and every guide number episodes in
+    broadcast order, so "Serenity" is S01E11 whichever disc slot it came from.
+
+    The mapping is used only when it covers every position on this disc. Half a disc
+    mapped and half counted would let two files claim one number.
+    """
+    by_number = {(e["season"], e["number"]): e for e in (episode_list or [])}
+    dvd_map = {int(k): v for k, v in (dvd_map or {}).items()}
+    kept = [r for r in rows if r.get("include", True)]
+    n, spans = int(start or 1), []
+    for r in kept:
+        span = int(r.get("span") or 0) or (
+            2 if int(r.get("episode_last") or r.get("episode") or 0)
+            > int(r.get("episode") or 0) else 1)
+        spans.append((r, n, span))
+        n += span
+    use_dvd = bool(dvd_map) and all(p + k in dvd_map for _, p, s in spans
+                                    for k in range(s))
+    for r, p, span in spans:
+        r["span"] = span
+        r["position"], r["position_last"] = p, p + span - 1
+        if use_dvd:
+            a, b = dvd_map[p], dvd_map[p + span - 1]
+            r["season"], r["episode"] = a["season"], a["number"]
+            r["episode_last"] = (b["number"] if b["season"] == a["season"]
+                                 and b["number"] == a["number"] + span - 1
+                                 else a["number"])
+            name = a.get("name") or ""
+        else:
+            r["season"], r["episode"], r["episode_last"] = season, p, p + span - 1
+            # A two-episode file carries both names, joined the way Sonarr joins them.
+            # Avatar Book Two disc 2 has "The Serpent's Pass" and "The Drill" welded into
+            # one stream; named after the first alone, the second had no name anywhere.
+            names = [(by_number.get((season, k)) or {}).get("name") or ""
+                     for k in range(p, p + span)] if season is not None else [""]
+            name = " + ".join(x for x in names if x)
+        if int(r.get("title_index", -1)) not in typed:
+            r["episode_title"] = name
+    return use_dvd
+
+
 # ── turning all of that into a list of files ─────────────────────────────────
 
-def build_plan(found, season=None, first_episode=1, series=None, episode_list=None):
+def build_plan(found, season=None, first_episode=1, series=None, episode_list=None,
+               dvd_map=None):
     """The list of episodes to rip, numbered and named.
 
     Sequence comes from the disc (`found["episodes"]`, already ordered); numbers come
@@ -570,29 +1082,19 @@ def build_plan(found, season=None, first_episode=1, series=None, episode_list=No
     A double-length title consumes two episode numbers and is named `S01E01-E02`, which
     is what Plex and Jellyfin both read as a two-episode file.
     """
-    by_number = {}
-    for e in (episode_list or []):
-        by_number[(e["season"], e["number"])] = e
-
-    plan = []
-    number = int(first_episode or 1)
-    for t in found["episodes"]:
-        span = 2 if t["index"] in (found.get("doubles") or []) else 1
-        numbers = list(range(number, number + span))
-        meta = by_number.get((season, numbers[0])) if season is not None else None
-        plan.append({
-            "title_index": t["index"],
-            "seconds": t["seconds"],
-            "bytes": t.get("bytes") or 0,
-            "season": season,
-            "episode": numbers[0],
-            "episode_last": numbers[-1],
-            "episode_title": (meta or {}).get("name") or "",
-            "source": t.get("source") or "",
-        })
-        number += span
+    plan = [{"title_index": t["index"],
+             "seconds": t["seconds"],
+             "bytes": t.get("bytes") or 0,
+             "span": 2 if t["index"] in (found.get("doubles") or []) else 1,
+             "source": t.get("source") or ""}
+            for t in found["episodes"]]
+    dvd_map = dvd_map or {}
+    used = number_rows(plan, season, first_episode, episode_list, dvd_map)
 
     return {
+        # Kept in the plan, not re-fetched: renumbering after a correction, in the page
+        # or on the box, has to map positions exactly as the first numbering did.
+        "dvd_map": {str(k): v for k, v in dvd_map.items()} if used else {},
         "series": (series or {}).get("name") or "",
         "series_id": (series or {}).get("id"),
         "series_year": (series or {}).get("year"),
@@ -625,17 +1127,32 @@ def plan_warnings(plan, found, episode_list=None):
                    "that looks like a repeat.")
     if found.get("duplicates"):
         out.append("%d duplicate playlist%s ignored — this disc carries each episode "
-                   "twice, once with the “next time” trailer and once without."
+                   "twice (with and without the opening, or a “next time” trailer), "
+                   "and the longer, complete version was kept."
                    % (len(found["duplicates"]),
                       "" if len(found["duplicates"]) == 1 else "s"))
     if found.get("play_all"):
         out.append("The “play all” title was excluded. It's every episode in "
                    "one file, and it's what gave us the episode order.")
-    if found.get("doubles"):
-        out.append("%d title%s twice the usual length, numbered as a two-episode file "
-                   "(S01E01-E02), which is how a premiere or finale is normally shipped."
-                   % (len(found["doubles"]), " is" if len(found["doubles"]) == 1
-                      else "s are"))
+    if found.get("beyond_play_all"):
+        n = len(found["beyond_play_all"])
+        out.append("The disc's \u201cplay all\u201d stops short: %d episode%s after it %s "
+                   "placed by where %s on the disc, which continues the same order."
+                   % (n, "" if n == 1 else "s", "is" if n == 1 else "are",
+                      "it sits" if n == 1 else "they sit"))
+    for idx in found.get("outside_play_all") or []:
+        secs = next((x.get("seconds", 0) for x in found.get("extras") or []
+                     if x["index"] == idx), 0)
+        out.append("Title %d is episode-length (%d min) but isn't part of the “play "
+                   "all”, so it's listed under extras rather than numbered — usually a "
+                   "bonus episode or a featurette. Tick it there to keep it."
+                   % (idx, round(secs / 60.0)))
+    for e in plan.get("episodes") or []:
+        if int(e.get("span") or 1) > 1 and e.get("episode") is not None:
+            out.append("Title %d runs two episodes long, so it is filed as one "
+                       "two-episode file (E%02d-E%02d), which Plex and Jellyfin read as "
+                       "both." % (e["title_index"], int(e["episode"]),
+                                                   int(e["episode_last"])))
     if plan.get("season") is None:
         out.append("No season number — the disc label didn't say. Set it before this "
                    "runs or the files land without one.")

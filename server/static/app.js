@@ -1161,6 +1161,11 @@ function duration(sec) {
 function seasonPrompt(j) {
   const plan = j.episode_plan || {};
   const rows = plan.episodes || [];
+  // Read already and ejected, waiting only on its names: nothing here touches the disc,
+  // and an extra that wasn't read can't be added now.
+  const held = !!(plan.hold && j.local_path);
+  const verb = held ? "File" : "Rip";
+  const extrasShown = (plan.extras || []).filter(x => !held || x.state === "ripped");
   const opts = plan.series_options || [];
   const trust = { high: ["Read off the disc", "ok"], medium: ["Very likely right", ""],
                   low: ["A guess", "warn"] }[plan.confidence] || ["", ""];
@@ -1171,7 +1176,7 @@ function seasonPrompt(j) {
           <div class="job-title">${esc(plan.series || j.disc_label || "A season disc")}</div>
           <div class="job-phase">${esc(j.question || "Check this before Riparr rips it.")}</div>
         </div>
-        <span class="badge warn">Needs you</span>
+        <span class="badge warn">${held ? "Ripped — needs a name" : "Needs you"}</span>
       </div>
 
       ${(plan.warnings || []).length ? `
@@ -1202,7 +1207,7 @@ function seasonPrompt(j) {
           <span class="help">Set 0 to file these as specials.</span></label>
         <label class="f"><span>First episode</span>
           <input id="ep-first" type="number" min="1" max="999" style="width:80px"
-                 value="${rows.length ? rows[0].episode : 1}">
+                 value="${rows.length ? (rows[0].position || rows[0].episode) : 1}">
           <span class="help">Shift this if the disc doesn't start where TVmaze does.</span>
         </label>
       </div>
@@ -1216,14 +1221,48 @@ function seasonPrompt(j) {
           : "could not be read from the disc — this is the order MakeMKV found them in."
         }</span></div>` : ""}
 
-      <div class="ep-table" id="ep-rows">
+      ${(() => {
+        const w = plan.witness || {};
+        if (w.show === "agree" && w.verdict === "agree")
+          return `<div class="ep-trust"><span class="badge ok">Two sources agree</span>
+            <span class="muted">TVmaze and Wikidata both say this is the show, and agree on
+            ${w.agree} of these episode names.</span></div>`;
+        if (w.show === "agree")
+          return `<div class="ep-trust"><span class="badge ok">Show confirmed</span>
+            <span class="muted">Wikidata, checked separately, finds the same show.</span></div>`;
+        if (w.show === "unavailable" && plan.series_id)
+          return `<div class="ep-trust"><span class="muted">Named from TVmaze alone —
+            Wikidata couldn't be reached to double-check.</span></div>`;
+        return "";
+      })()}
+
+      <div class="ep-table" id="ep-rows" data-dvd="${esc(JSON.stringify(plan.dvd_map || {}))}">
         ${rows.map((e, i) => episodeRow(e, i, rows.length)).join("")}
       </div>
 
+      ${extrasShown.length ? `
+        <details class="ep-extras"${extrasShown.some(x => x.include) ? " open" : ""}>
+          <summary>${extrasShown.length} extra${extrasShown.length === 1 ? "" : "s"} on this
+            disc <span class="muted">— tick any you want; they go in the show's
+            Featurettes folder, where Plex and Jellyfin look</span></summary>
+          <div class="ep-table" id="ep-extras">
+            ${extrasShown.map(x => `
+              <div class="ep-row ep-extra${x.include ? "" : " dropped"}" data-xi="${x.title_index}">
+                <input type="checkbox" class="ep-keep" ${x.include ? "checked" : ""}>
+                <span class="ep-num muted">Extra</span>
+                <span class="ep-dur">${esc(duration(x.seconds))}</span>
+                <input class="ep-title" value="${esc(x.name || "")}" placeholder="What is it?">
+                <span class="ep-src muted">Title ${x.title_index}</span>
+                <span class="ep-move"></span>
+              </div>`).join("")}
+          </div>
+        </details>` : ""}
+
       <div class="btn-row">
-        <button class="btn primary" data-answer-season="${j.id}">
-          Rip ${rows.length} episode${rows.length === 1 ? "" : "s"}</button>
-        <button class="btn" data-skip="${j.id}">Skip this disc</button>
+        <button class="btn primary" data-answer-season="${j.id}" data-verb="${verb}">
+          ${verb} ${rows.length} episode${rows.length === 1 ? "" : "s"}</button>
+        <button class="btn" data-skip="${j.id}" data-held="${held ? 1 : ""}">${
+          held ? "Discard what was read" : "Skip this disc"}</button>
       </div>
       <div class="ep-credit muted">Episode names from
         <a href="https://www.tvmaze.com" target="_blank" rel="noopener">TVmaze</a>.</div>
@@ -1261,6 +1300,7 @@ function identifyPrompt(j) {
   if ((j.episode_plan || {}).episodes) return seasonPrompt(j);
   const titles = (j.titles || []).filter(t => t.seconds >= 60);
   const music = j.kind === "music";
+  const data = j.kind === "data";
   return `
     <div class="job needs">
       <div class="job-head">
@@ -1272,9 +1312,13 @@ function identifyPrompt(j) {
       </div>
       ${music ? `
       <label class="f wide"><span>What is this album?</span>
-        <input id="ni-name" value="" placeholder="e.g. Pink Floyd - The Wall">
+        <input id="ni-name" value="${esc(j.title || "")}" placeholder="e.g. Pink Floyd - The Wall">
         <span class="help">The artist, a dash, then the album. The tracks are numbered;
-          Riparr remembers the name if this CD comes back.</span></label>` : `
+          Riparr remembers the name if this CD comes back.</span></label>` : data ? `
+      <label class="f wide"><span>What should the image be called?</span>
+        <input id="ni-name" value="${esc(j.title || "")}" placeholder="e.g. Age of Empires II">
+        <span class="help">Saved as this name with .iso on the end, in the Data
+          folder.</span></label>` : `
       <label class="f wide"><span>What is this film?</span>
         <input id="ni-name" value="${esc(j.title || "")}" placeholder="e.g. The Matrix (1999)">
         <span class="help">A year in brackets is used as the year. Without one Riparr
@@ -1292,7 +1336,7 @@ function identifyPrompt(j) {
             </label>`).join("")}
         </div>` : ""}
       <div class="btn-row">
-        <button class="btn primary" data-answer="${j.id}">Rip it</button>
+        <button class="btn primary" data-answer="${j.id}">${data ? "Save it" : "Rip it"}</button>
         <button class="btn" data-skip="${j.id}">Skip this disc</button>
       </div>
     </div>`;
@@ -1391,7 +1435,8 @@ function tray(drives, optical, canRip) {
     <div class="big spinning">${icon("compact-disc")}</div>
     <h2>${esc(d.label || (d.disc_family === "cd" ? (d.disc_word || "CD") : "Disc loaded"))}</h2>
     <p>${what && (d.label || d.disc_family !== "cd") ? `${esc(what)} \u2014 loaded and ready.` : "Loaded and ready."}</p>
-    ${d.space_warning ? `<p class="why warn-text">${esc(d.space_warning)}</p>` : ""}
+    ${d.space_warning ? `<p class="why warn-text">${esc(d.space_warning)}</p>`
+      : d.space_note ? `<p class="why muted">${esc(d.space_note)}</p>` : ""}
     ${canRip ? `<div class="btn-row tray-go">
       <button class="btn primary" id="rip-now">${icon("play")} Rip this disc</button>
     </div>` : ""}
@@ -1867,7 +1912,8 @@ settingsPages.library = async (s) => {
           <label class="f"><span>Folder</span>
             <input data-set="${folderKey}" data-dest-folder="${kind}"
                    value="${esc(s[folderKey] || "")}" placeholder="${
-                     kind === "tv" ? "TV" : kind === "music" ? "Music" : "Movies"}"></label>
+                     kind === "tv" ? "TV" : kind === "music" ? "Music"
+                     : kind === "data" ? "Data" : "Movies"}"></label>
         </div>
         <div class="dest-path" data-dest-path="${kind}">${
           sh ? esc(destPath(sh, s[folderKey])) : "no share configured"}</div>
@@ -1894,6 +1940,7 @@ settingsPages.library = async (s) => {
           ${row("movie", "Films", "movie_folder", "movie_share_id")}
           ${row("tv", "Television", "tv_folder", "tv_share_id")}
           ${row("music", "Music", "music_folder", "music_share_id")}
+          ${row("data", "Data discs", "data_folder", "data_share_id")}
         </div>`
       : `<div class="empty-state"><div class="big">${icon("hard-drive")}</div>
           <h2>No share configured</h2>
@@ -2069,7 +2116,45 @@ settingsPages.ripping = async (s) => {
   }
   const fmtNow = formats.find(f => f.id === s.music_format) || formats[0]
     || { id: "flac", qualities: [] };
+  const kindRow = (key, label, help) => `
+    <label class="f"><span>${label}</span>
+      <select data-set="${key}">
+        ${opt("rip", "Rip it (default)", s[key] || "rip")}
+        ${opt("show", "Show me first", s[key] || "rip")}
+        ${opt("ignore", "Leave it alone", s[key] || "rip")}
+      </select>
+      <span class="help">${help}</span></label>`;
+  const extrasRow = (key, label) => `
+    <label class="f"><span>${label}</span>
+      <select data-set="${key}">
+        ${opt("none", "Don't rip extras (default)", s[key] || "none")}
+        ${opt("all", "Rip all of them", s[key] || "none")}
+      </select>
+      <span class="help">Featurettes, deleted scenes and the like, filed in a
+        <b>Featurettes</b> folder where Plex and Jellyfin look. Duplicates, alternate
+        cuts and the decoy playlists some discs carry are left out.</span></label>`;
   return `
+  <div class="section"><h2>Auto Rip, by kind of disc</h2><div>
+    <p class="muted">What Auto Rip does once it knows what's in the tray. Riparr has to
+      read a disc to know what it is, so <b>Show me first</b> reads it and then waits
+      for you, and <b>Leave it alone</b> reads it and ejects it. Pressing <b>Rip</b>
+      yourself always rips.</p>
+    ${kindRow("auto_movie", "Films", "Show me first lets you check the name and which "
+      + "title is the film before anything is ripped.")}
+    ${extrasRow("movie_extras", "Film extras")}
+    ${kindRow("auto_tv", "TV seasons", "Rip it never stops the drive — if something "
+      + "can't be worked out, the disc is ripped anyway and only the filing waits (see "
+      + "Television below). Show me first lets you untick episodes and pick extras "
+      + "before it rips.")}
+    ${extrasRow("tv_extras", "TV extras")}
+    ${kindRow("auto_music", "Music CDs", "Show me first lets you check the album "
+      + "match before ripping.")}
+    ${kindRow("auto_data", "Data discs", "Anything that isn't a film, a season or "
+      + "music — an old game, a disc of photos. Saved whole as one ISO image in the "
+      + "Data folder, which keeps everything, including what an installer needs to "
+      + "boot.")}
+  </div></div>
+
   <div class="section"><h2>What to rip</h2><div>
     <label class="f"><span>Titles</span>
       <select data-set="rip_mode">
@@ -2109,24 +2194,24 @@ settingsPages.ripping = async (s) => {
         "A disc with six titles of the same length is a season disc, not a film with "
         + "five decoys. Turn this off if you only own films — every test that finds "
         + "television is a test that can be wrong about a film.")}
-    <label class="f"><span>Before ripping a season</span>
+    <label class="f"><span>When Riparr isn't sure about a season</span>
       <select data-set="on_season_disc">
-        ${opt("unsure", "Show me the plan when Riparr isn't sure (default)",
+        ${opt("unsure", "Rip it, and hold the filing for me (default)",
               s.on_season_disc)}
-        ${opt("ask", "Always show me the plan", s.on_season_disc)}
-        ${opt("auto", "Never — just rip it", s.on_season_disc)}
+        ${opt("auto", "Never — file its best guess", s.on_season_disc)}
       </select>
-      <span class="help">The default stops <b>once per season</b> — on the first disc,
-        where one correction fixes every disc after it — and on any later disc whose
-        episode order Riparr could not read off the disc itself.
-        <br><br>Reading the order off the disc is reliable; most Blu-ray season discs
-        carry a "play all" playlist that <em>is</em> the disc's record of its own
-        episode order. What that can't settle is whether the numbering matches your
-        episode guide: a few shows were released on disc in production order while
-        every guide lists them in broadcast order. Riparr can't detect which kind a
-        show is, so it shows you the first disc and gets on with the rest.
-        <br><br>A disc with no season number always asks, whatever this says, because
-        there is no answer to get on with.</span></label>
+      <span class="help">The default never holds the drive. A disc Riparr can read and
+        name is ripped and filed without stopping. If something can't be worked out —
+        no season number on the label, an earlier disc of the set not ripped yet, or no
+        internet to check the episode guide — the disc is still ripped and ejected, and
+        only the filing waits for you. A disc that came in before the one ahead of it
+        files itself once that one is done. Seasons on DVD are always held for you:
+        a DVD doesn't record its episode order the way a Blu-ray does.
+        <br><br>Episode order is read off the disc's "play all" list. Whether a show was
+        released on disc in a different order from how it aired (Firefly is the famous
+        one) is looked up on TVmaze, and the files are named by the episode each one
+        really is. To see every plan before it rips, set TV seasons to <b>Show me
+        first</b> under Auto Rip.</span></label>
     ${sw("tv_metadata", "Look up episode names", s.tv_metadata,
         "From TVmaze, which needs no account. Off gives you correctly numbered files "
         + "with no names — Plex and Jellyfin still match those perfectly, because they "
@@ -2183,6 +2268,13 @@ settingsPages.ripping = async (s) => {
   </div></div>
 
   <div class="section"><h2>Transfer</h2><div>
+    ${sw("cool_running", "Keep the box cool while ripping", s.cool_running !== false,
+        "Small boards run hot when ripping, and some (the Orange Pi Zero 2W among them) "
+        + "never slow themselves down. While a disc is being read, this holds the CPU "
+        + "at a lower speed on two cores — which doesn't slow a rip, because the drive "
+        + "and the network are the limit — and pauses between episodes if the box gets "
+        + "above 85 °C, until it's back under 78 °C. Riparr steps the CPU down above "
+        + "85 °C whatever this says.")}
     <label class="f"><span>Mode</span>
       <select data-set="transfer_mode">
         ${opt("direct", "Straight to your library (recommended)", s.transfer_mode)}
@@ -3054,7 +3146,9 @@ systemPages.status = async () => {
         <div class="k">Kernel</div><div class="v">${esc(sys.kernel || "—")}</div>
         <div class="k">Mode</div><div class="v">${sys.mock ? "Development (simulated)" : "Appliance"}</div>
         <div class="k">Memory</div><div class="v">${sys.memory_used_mb} of ${sys.memory_total_mb} MB</div>
-        <div class="k">Temperature</div><div class="v">${sys.cpu_temp_c ?? "—"} °C
+        <div class="k">Temperature</div><div class="v">${sys.cpu_temp_c ?? "—"} °C${
+          (sys.thermal || {}).state && sys.thermal.state !== "normal"
+            ? ` <span class="muted">— ${esc(sys.thermal.state)}, CPU at ${sys.thermal.max_mhz} MHz</span>` : ""}
           ${sys.throttled ? '<span class="badge warn">throttled</span>' : ""}</div>
         <div class="k">Uptime</div><div class="v">${uptime(sys.uptime_seconds)}</div>
       </div>
@@ -4215,10 +4309,16 @@ function wireContent(section, sub) {
       return;
     }
     const picked = ($("#ep-series") || {}).value;
+    const extras = {};
+    $$("#ep-extras .ep-extra").forEach(r => {
+      if (r.querySelector(".ep-keep").checked) {
+        extras[r.dataset.xi] = r.querySelector(".ep-title").value.trim() || "Extra";
+      }
+    });
     const body = {
       season: Number(season),
       first_episode: Number(($("#ep-first") || {}).value || 1),
-      include, order, episode_titles: titles,
+      include, order, episode_titles: titles, extras,
       name: (($("#ep-name") || {}).value || "").trim(),
     };
     if (picked) body.series_id = Number(picked);
@@ -4248,15 +4348,34 @@ function wireContent(section, sub) {
     const seasonRaw = ($("#ep-season") || {}).value;
     const season = seasonRaw === "" ? null : Number(seasonRaw);
     let n = Number(($("#ep-first") || {}).value || 1);
-    $$("#ep-rows .ep-row").forEach((r, i, all) => {
+    // A show whose DVD order differs is named by the broadcast number each disc
+    // position holds -- the same mapping the box applies (tv.number_rows).
+    let dvd = {};
+    try { dvd = JSON.parse(($("#ep-rows") || {}).dataset.dvd || "{}"); } catch (e) {}
+    const all = $$("#ep-rows .ep-row");
+    const covered = Object.keys(dvd).length && (() => {
+      let p = n;
+      return all.every(r => {
+        if (!r.querySelector(".ep-keep").checked) return true;
+        const sp = r.querySelector(".ep-title").placeholder.startsWith("Two") ? 2 : 1;
+        const ok = [...Array(sp).keys()].every(k => dvd[p + k]);
+        p += sp;
+        return ok;
+      });
+    })();
+    all.forEach((r, i) => {
       const keep = r.querySelector(".ep-keep").checked;
       const span = r.querySelector(".ep-title").placeholder.startsWith("Two") ? 2 : 1;
       const cell = r.querySelector(".ep-num");
       r.classList.toggle("dropped", !keep);
       if (!keep) { cell.textContent = "—"; }
       else {
-        cell.textContent = episodeCode({ season, episode: n,
-                                         episode_last: n + span - 1 });
+        const a = covered && dvd[n], b = covered && dvd[n + span - 1];
+        cell.textContent = a
+          ? episodeCode({ season: a.season, episode: a.number,
+                          episode_last: b && b.number === a.number + span - 1
+                            ? b.number : a.number })
+          : episodeCode({ season, episode: n, episode_last: n + span - 1 });
         n += span;
       }
       r.querySelector("[data-up]").disabled = i === 0;
@@ -4266,13 +4385,30 @@ function wireContent(section, sub) {
   $$("[data-up]").forEach(b => b.onclick = () => moveRow(Number(b.dataset.up), -1));
   $$("[data-down]").forEach(b => b.onclick = () => moveRow(Number(b.dataset.down), 1));
   $$("#ep-rows .ep-keep").forEach(c => c.onchange = renumberRows);
+  // The button says what it will do, extras included, so ticking one is visibly taken.
+  const ripLabel = () => {
+    const b = $("[data-answer-season]");
+    if (!b) return;
+    const n = $$("#ep-rows .ep-keep").filter(c => c.checked).length;
+    const x = $$("#ep-extras .ep-keep").filter(c => c.checked).length;
+    b.textContent = `${b.dataset.verb || "Rip"} ${n} episode${n === 1 ? "" : "s"}` +
+      (x ? ` and ${x} extra${x === 1 ? "" : "s"}` : "");
+  };
+  $$("#ep-extras .ep-keep").forEach(c => c.onchange = () => {
+    c.closest(".ep-row").classList.toggle("dropped", !c.checked);
+    ripLabel();
+  });
+  $$("#ep-rows .ep-keep").forEach(c => c.addEventListener("change", ripLabel));
+  ripLabel();
   ["ep-season", "ep-first"].forEach(id => {
     const el = $("#" + id);
     if (el) el.oninput = renumberRows;
   });
 
   $$("[data-skip]").forEach(b => b.onclick = async () => {
-    if (!confirm("Skip this disc?\n\nIt will be ejected without being ripped.")) return;
+    if (!confirm(b.dataset.held
+        ? "Discard this disc?\n\nWhat was read from it is deleted and nothing is filed."
+        : "Skip this disc?\n\nIt will be ejected without being ripped.")) return;
     try { await api.post(`/api/queue/${b.dataset.skip}/answer`, { skip: true }); }
     catch (e) { toast(e.message, "bad"); }
     route();

@@ -33,9 +33,17 @@ install -d -m 0755 "$LIB"
 # ── helper scripts ──
 # Every root-side helper the one-way doors call. Listed rather than globbed so a stray
 # file in packaging/ cannot become a privileged script by being dropped there.
+netwatch_changed=0
+thermal_changed=0
 for s in wifi-apply.sh usbhost-fix.sh makemkv-run.sh netwatch.sh dvdtools-install.sh \
-         cdtools-install.sh; do
+         cdtools-install.sh thermal.sh; do
     [ -f "$PKG/$s" ] || continue
+    if [ "$s" = netwatch.sh ] && ! cmp -s "$PKG/$s" "$LIB/$s"; then
+        netwatch_changed=1
+    fi
+    if [ "$s" = thermal.sh ] && ! cmp -s "$PKG/$s" "$LIB/$s"; then
+        thermal_changed=1
+    fi
     install -o root -g root -m 0755 "$PKG/$s" "$LIB/$s"
 done
 
@@ -95,6 +103,7 @@ for u in riparr.service \
          riparr-wifi.service riparr-wifi.path \
          riparr-netwatch.service \
          riparr-powerkey.service \
+         riparr-thermal.service \
          riparr-provision.service riparr-provision.path \
          riparr-restart.service riparr-restart.path \
          riparr-remount.service riparr-remount.path \
@@ -135,6 +144,13 @@ if [ -f /etc/systemd/system/riparr-netwatch.service ]; then
     if ! systemctl is-active --quiet riparr-netwatch.service; then
         systemctl start riparr-netwatch.service 2>/dev/null || true
         say "Wi-Fi watchdog started"
+    elif [ "$netwatch_changed" = 1 ]; then
+        # A running watchdog keeps the old script until it restarts, so a fix to it
+        # reached no box until its next reboot. Restarting resets its escalation count,
+        # which is why it is otherwise left alone -- but an update arrived over this
+        # network, so there is no outage in progress to lose track of.
+        systemctl restart riparr-netwatch.service 2>/dev/null || true
+        say "Wi-Fi watchdog restarted with the new version"
     else
         say "Wi-Fi watchdog already running (left alone)"
     fi
@@ -146,6 +162,19 @@ if [ -f /etc/systemd/system/riparr-powerkey.service ]; then
     systemctl enable --quiet riparr-powerkey.service 2>/dev/null || true
     systemctl restart riparr-powerkey.service 2>/dev/null || true
     say "power button handler started"
+fi
+
+# The thermal guard: unlike the Wi-Fi watchdog it has no escalation to lose, so a new
+# version simply replaces the old one.
+if [ -f /etc/systemd/system/riparr-thermal.service ]; then
+    systemctl enable --quiet riparr-thermal.service 2>/dev/null || true
+    if [ "$thermal_changed" = 1 ] && systemctl is-active --quiet riparr-thermal.service; then
+        systemctl restart riparr-thermal.service 2>/dev/null || true
+        say "Thermal guard restarted with the new version"
+    elif ! systemctl is-active --quiet riparr-thermal.service; then
+        systemctl start riparr-thermal.service 2>/dev/null || true
+        say "Thermal guard started"
+    fi
 fi
 
 # DVD backups need dvdbackup and libdvdcss (see packaging/dvdtools-install.sh). Asked
@@ -174,6 +203,53 @@ if [ -f /etc/systemd/system/riparr-cdtools.path ] && [ -d /run/riparr ]; then
             break
         fi
     done
+fi
+
+# ── the hardware watchdog ──
+# A box that freezes outright stays frozen until somebody pulls the plug -- found
+# 2026-10-12, when the Orange Pi's Wi-Fi chip hung mid-rip and took the kernel with it:
+# no network, no log after the hang, and nothing on the board was going to notice. Every
+# supported board has a hardware watchdog; with systemd feeding it, a frozen box reboots
+# itself within seconds and the interrupted rip carries on when the disc goes back in.
+# 15 s is the longest both the Allwinner and the Broadcom watchdogs accept.
+if [ -e /dev/watchdog ] || [ -e /dev/watchdog0 ]; then
+    want='[Manager]
+RuntimeWatchdogSec=15s
+RebootWatchdogSec=10min'
+    conf=/etc/systemd/system.conf.d/riparr-watchdog.conf
+    if [ "$(cat "$conf" 2>/dev/null)" != "$want" ]; then
+        mkdir -p /etc/systemd/system.conf.d
+        printf '%s\n' "$want" > "$conf"
+        systemctl daemon-reexec
+        say "Hardware watchdog on: a frozen box reboots itself"
+    fi
+fi
+
+# ── Bluetooth off on the Orange Pi's AW859A ──
+# Riparr never uses Bluetooth, and on this chip it shares the radio with Wi-Fi. When the
+# Wi-Fi firmware hung, the driver's own recovery tried to power-cycle the chip and was
+# refused -- "can not power off, other module is on" -- because Bluetooth was holding it,
+# so Wi-Fi never came back. Not starting hciattach is not enough: the driver's own
+# sprdbt_tty powers the chip's Bluetooth side whenever the Bluetooth rfkill switch is
+# unblocked, and the vendor unit unblocks everything ("power state:5" -- Wi-Fi and
+# Bluetooth -- with no Bluetooth service running at all). So the radio is blocked as
+# well. sunxi_addr still loads and Wi-Fi is still unblocked: the Wi-Fi side needs both.
+if systemctl cat aw859a-bluetooth.service >/dev/null 2>&1; then
+    want='[Service]
+ExecStartPre=
+ExecStartPre=/sbin/modprobe sunxi_addr
+ExecStartPre=/usr/sbin/rfkill unblock wifi
+ExecStartPre=/usr/sbin/rfkill block bluetooth
+ExecStart=
+ExecStart=/bin/true'
+    conf=/etc/systemd/system/aw859a-bluetooth.service.d/riparr-no-bluetooth.conf
+    if [ "$(cat "$conf" 2>/dev/null)" != "$want" ]; then
+        mkdir -p "$(dirname "$conf")"
+        printf '%s\n' "$want" > "$conf"
+        systemctl daemon-reload
+        rfkill block bluetooth 2>/dev/null || true
+        say "Bluetooth off (it blocked Wi-Fi recovery)"
+    fi
 fi
 
 say "System units are up to date"
