@@ -20,7 +20,7 @@ from . import (__version__, artwork as ART, backup as BK, db, drives as DRV, led
                music as MU,
                makemkv as MK,
                notify as NT, platform as P, power as PWR, profiling as PROF, rip as RIP, shares as SH, system as SY,
-               tv as TV, updater)
+               tv as TV, updater, web as WEB)
 
 STATIC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
 COOKIE = "riparr_session"
@@ -35,6 +35,40 @@ _OPENAPI = None if P.IS_APPLIANCE else "/api/openapi.json"
 
 app = FastAPI(title="Riparr", version=__version__, docs_url=_DOCS,
               openapi_url=_OPENAPI)
+
+
+def _gate_serializer():
+    return URLSafeTimedSerializer(_secret(), salt="riparr-gate")
+
+
+def _gate_cookie_valid(value):
+    """A gate cookie is a signed, dated token minted by a login that carried
+    RIPARR_AUTH_TOKEN. Its signature uses the session secret, so a password change
+    (which rotates the secret) revokes gate cookies along with sessions."""
+    try:
+        return bool(_gate_serializer().loads(value, max_age=WEB.GATE_MAX_AGE).get("g"))
+    except BadSignature:
+        return False
+
+
+# Everything in riparr/web.py: the body limit, the RIPARR_AUTH_TOKEN gate, the CSRF
+# checks and the security headers, wrapped around the whole app so static files and
+# the SPA shell get the headers too.
+app.add_middleware(WEB.Edge, verify_gate=_gate_cookie_valid)
+
+
+def _set_cookie(response, name, value, max_age):
+    """Every cookie this service sets: HttpOnly, SameSite=Lax, and Secure when the
+    box is told it sits behind TLS (RIPARR_COOKIE_SECURE=1)."""
+    response.set_cookie(name, value, httponly=True, samesite="lax", max_age=max_age,
+                        secure=WEB.cookie_secure())
+
+
+def _grant_gate(response):
+    if WEB.gate_token():
+        _set_cookie(response, WEB.GATE_COOKIE,
+                    _gate_serializer().dumps({"g": 1, "t": int(time.time())}),
+                    WEB.GATE_MAX_AGE)
 
 
 # The signing secret, read once. Every authenticated request verifies its cookie with it,
@@ -160,6 +194,8 @@ def require_user(request: Request):
 class Login(BaseModel):
     username: str
     password: str
+    # The access token, when the box has one (RIPARR_AUTH_TOKEN). Ignored otherwise.
+    token: str = ""
 
 
 # ── login throttle ──
@@ -205,25 +241,33 @@ def _login_succeeded():
 @app.post("/api/auth/login")
 def login(body: Login, response: Response):
     time.sleep(_login_delay())            # pay the accumulated cost before answering
+    # The gate first, and counted like a wrong password: a guessing run against the
+    # token pays the same escalating delay.
+    if WEB.gate_token() and not WEB.token_matches(body.token):
+        _login_failed(body.username)
+        raise HTTPException(status_code=401, detail="Wrong access token")
     if not db.verify_user(body.username, body.password):
         _login_failed(body.username)
         raise HTTPException(status_code=401, detail="Wrong username or password")
     _login_succeeded()
     token = _serializer().dumps({"u": body.username, "t": int(time.time())})
-    response.set_cookie(COOKIE, token, httponly=True, samesite="lax",
-                        max_age=SESSION_MAX_AGE)
+    _set_cookie(response, COOKIE, token, SESSION_MAX_AGE)
+    _grant_gate(response)
     return {"ok": True, "username": body.username}
 
 
 @app.post("/api/auth/logout")
 def logout(response: Response):
     response.delete_cookie(COOKIE)
+    response.delete_cookie(WEB.GATE_COOKIE)
     return {"ok": True}
 
 
 @app.get("/api/auth/me")
 def me(request: Request):
     return {"username": current_user(request), "has_users": db.has_users(),
+            # The page asks for the access token on the sign-in form when there is one.
+            "gate": bool(WEB.gate_token()),
             # What the page should offer. Power controls are hidden, not just refused,
             # when the box has RIPARR_ALLOW_POWER=0: a Shut down link that always
             # fails is worse than none.
@@ -248,8 +292,8 @@ def change_password(body: PasswordChange, request: Request, response: Response,
     # changed it signed in on this device, which is the expected behaviour.
     _rotate_secret()
     token = _serializer().dumps({"u": user, "t": int(time.time())})
-    response.set_cookie(COOKIE, token, httponly=True, samesite="lax",
-                        max_age=SESSION_MAX_AGE)
+    _set_cookie(response, COOKIE, token, SESSION_MAX_AGE)
+    _grant_gate(response)
     return {"ok": True}
 
 
@@ -258,10 +302,11 @@ def change_password(body: PasswordChange, request: Request, response: Response,
 class SetupUser(BaseModel):
     username: str
     password: str
+    token: str = ""
 
 
 @app.get("/api/setup/state")
-def setup_state():
+def setup_state(request: Request):
     """What the setup wizard needs to know before anyone has signed in.
 
     Unauthenticated by necessity -- it is what the page asks to find out whether an
@@ -271,10 +316,18 @@ def setup_state():
     **password in the clear**: an unauthenticated GET handed out the credentials to
     the user's NAS.
     """
+    # Behind the access-token gate, before the token has been presented, this says
+    # only what the sign-in page needs: that there is a gate, and whether an account
+    # exists. The share's host, the hostname and the MakeMKV state wait.
+    if WEB.gate_token() and not (WEB.bearer_ok(request.scope)
+                                 or WEB.gate_cookie_ok(request.scope, _gate_cookie_valid)):
+        return {"has_users": db.has_users(), "complete": bool(db.get("setup_complete")),
+                "gate": True, "version": __version__}
     share = db.default_share()
     return {
         "has_users": db.has_users(),
         "complete": bool(db.get("setup_complete")),
+        "gate": bool(WEB.gate_token()),
         "makemkv": P.makemkv_status(),
         "share": None if not share else {
             "id": share["id"], "name": share["name"],
@@ -290,12 +343,14 @@ def setup_state():
 def setup_user(body: SetupUser, response: Response):
     if db.has_users():
         raise HTTPException(status_code=400, detail="An account already exists")
+    if WEB.gate_token() and not WEB.token_matches(body.token):
+        raise HTTPException(status_code=401, detail="Wrong access token")
     if len(body.password) < 8:
         raise HTTPException(status_code=400, detail="Use at least 8 characters")
     db.create_user(body.username, body.password)
     token = _serializer().dumps({"u": body.username, "t": int(time.time())})
-    response.set_cookie(COOKIE, token, httponly=True, samesite="lax",
-                        max_age=SESSION_MAX_AGE)
+    _set_cookie(response, COOKIE, token, SESSION_MAX_AGE)
+    _grant_gate(response)
     return {"ok": True}
 
 

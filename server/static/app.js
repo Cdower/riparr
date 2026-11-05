@@ -3,11 +3,17 @@
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 
+// Every request the page makes carries this header. The service refuses a
+// state-changing request without it (or a bearer token), which is what stops a form
+// or an image tag on some other site from reaching the API with this browser's
+// cookie -- a page cannot add a custom header to those. See riparr/web.py.
+const REQUEST_HEADERS = { "X-Riparr-Request": "1" };
+
 const api = {
   async call(method, path, body) {
     const r = await fetch(path, {
       method,
-      headers: body ? { "Content-Type": "application/json" } : {},
+      headers: body ? { ...REQUEST_HEADERS, "Content-Type": "application/json" } : REQUEST_HEADERS,
       body: body ? JSON.stringify(body) : undefined,
     });
     if (r.status === 401) { showGate(); throw new Error("Not signed in"); }
@@ -201,10 +207,18 @@ $("#login-form").onsubmit = async (e) => {
   try {
     await api.post("/api/auth/login", {
       username: $("#gate-user").value, password: $("#gate-pass").value,
+      token: $("#gate-token")?.value || "",
     });
     await boot();
   } catch (err) { $("#gate-err").textContent = err.message; }
 };
+
+/* A box with RIPARR_AUTH_TOKEN set asks for it on the sign-in form and on the
+   first-run account step. Nothing else about the page changes. */
+function showTokenField(on) {
+  const f = $("#gate-token-field");
+  if (f) f.hidden = !on;
+}
 
 /* ════════════════════ first run ════════════════════ */
 const wizard = {
@@ -257,6 +271,8 @@ const wizard = {
         <label class="f"><span>Password</span><input id="w-pass" type="password">
           <span class="help">At least 8 characters.</span></label>
         <label class="f"><span>Confirm password</span><input id="w-pass2" type="password"></label>
+        ${state.gate ? `<label class="f"><span>Access token</span><input id="w-token" type="password" autocomplete="off">
+          <span class="help">This box was set up with an access token (RIPARR_AUTH_TOKEN). Whoever set it up has it.</span></label>` : ""}
         <div class="result bad hidden" id="w-err"></div>
       </div></div>
       <div class="wz-actions">
@@ -271,7 +287,8 @@ const wizard = {
       if (p.length < 8) return fail("Use at least 8 characters.");
       if (p !== p2) return fail("The two passwords don't match.");
       try {
-        await api.post("/api/setup/user", { username: u, password: p });
+        await api.post("/api/setup/user", { username: u, password: p,
+                                            token: $("#w-token")?.value || "" });
         this.next();
       } catch (e) { fail(e.message); }
     };
@@ -4036,7 +4053,7 @@ function wireContent(section, sub) {
       fd.append("file", f);
       try {
         // FormData, so no JSON Content-Type -- the browser has to set the boundary.
-        const r = await fetch("/api/system/backups/upload", { method: "POST", body: fd });
+        const r = await fetch("/api/system/backups/upload", { method: "POST", body: fd, headers: REQUEST_HEADERS });
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || "Restore failed");
         toast(restoreSummary(d), "ok");
@@ -5008,6 +5025,8 @@ async function boot() {
   }
   hideWaiting();
 
+  state.gate = !!setup.gate;
+  showTokenField(state.gate);
   if (!setup.has_users) { wizard.step = 0; wizard.render(); return; }
 
   let me;

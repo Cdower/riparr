@@ -198,6 +198,14 @@ jobs:
           uv sync --locked --directory server
           server/.venv/bin/python server/power-gate.test.py
 
+      # The edge of the web service: security headers on every response, the CSRF
+      # origin-and-header check on anything that changes state, the body limit by
+      # declared length and by streamed bytes, cookie flags, and the RIPARR_AUTH_TOKEN
+      # gate by bearer header and by gate cookie.
+      - name: The web edge refuses what the page would never send
+        run: |
+          server/.venv/bin/python server/web-edge.test.py
+
       # A 3D Blu-ray's two cuts are the same film at the same length, so longest-wins
       # picks the 3D one -- twice the size, and most players will not use it. The first
       # fix for that took the smallest title of any runtime tie, which on an obfuscated

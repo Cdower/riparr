@@ -98,6 +98,18 @@ units, the helpers, the sysctl, the mDNS handoff and advert, the operator file a
 watchdog and Bluetooth drop-ins, leaves your own drop-ins, and with `--purge` also removes
 the code, the data and the two accounts. Both are idempotent and tested.
 
+**The web interface can be locked down for a network you do not fully trust.**
+`RIPARR_AUTH_TOKEN` adds an access token every request must carry as well as the login
+(the sign-in form asks for it; API clients send a bearer token), off unless set.
+State-changing requests are refused unless they come from the page itself -- an origin
+check plus a header the page sends and a form on another site cannot -- or carry the
+bearer token; every response carries a Content-Security-Policy that allows scripts and
+connections from this origin only and forbids framing, plus the usual nosniff, referrer
+and permissions headers; request bodies are capped (`RIPARR_MAX_BODY_BYTES`, 64 MiB);
+`RIPARR_COOKIE_SECURE=1` marks the cookies `Secure` behind TLS. The stock appliance
+notices none of it. `docs/hardened-deployment.md` is the recipe: loopback bind, auth on,
+`tailscale serve` or a reverse proxy in front, power controls off, watchdog reboot off.
+
 **A box can now stream a CPU profile to Grafana Cloud.** Settings → General has a new
 Performance profiling section: paste in the Profiles URL, stack ID and a token, press
 "Save and send a test profile", and the box sends which of its own functions are using
