@@ -44,7 +44,7 @@ for n in /proc/device-tree/soc/usb@*; do
   fi
 done
 if [ -z "$NODE" ]; then
-  say done "Both sockets can already host a drive. Nothing needed changing."
+  say "done" "Both sockets can already host a drive. Nothing needed changing."
   exit 0
 fi
 

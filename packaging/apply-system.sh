@@ -159,7 +159,8 @@ done
 #   netwatch-settings.py   netwatch.sh runs it as an argument to the system python3
 #   powerkey.py            the power button's root half, same arrangement
 #   makemkv-manifest.json  the MakeMKV installer's one source of versions and hashes
-for f in netwatch-settings.py powerkey.py makemkv-manifest.json; do
+#   staged-install.sh      sourced by the MakeMKV and DVD-tools installers, never run
+for f in netwatch-settings.py powerkey.py makemkv-manifest.json staged-install.sh; do
     [ -e "$PKG/$f" ] || [ -L "$PKG/$f" ] || continue
     if ! trusted_file "$PKG/$f"; then
         refuse "$PKG/$f is not a root-owned, unwritable regular file; not installed"

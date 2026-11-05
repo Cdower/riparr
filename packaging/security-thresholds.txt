@@ -1,0 +1,20 @@
+# Ceiling for `systemd-analyze security` per shipped unit, enforced by
+# packaging/security-score.sh in CI. Lower is better; a unit may score under its
+# ceiling, never over. Move a ceiling down when a sandbox tightens; move one up only
+# with a reason written beside it. Recorded with: packaging/security-score.sh --record
+riparr-cdtools.service       9.4
+riparr-dvdtools.service      9.4
+riparr-library.service       9.4
+riparr-makemkv.service       9.4
+riparr-netwatch.service      9.2
+riparr-powerkey.service      9.2
+riparr-poweroff.service      9.4
+riparr-provision.service     9.4
+riparr-reboot.service        9.4
+riparr-remount.service       9.4
+riparr-restart.service       9.4
+riparr-thermal.service       9.2
+riparr-update.service        9.4
+riparr-usbhost.service       9.4
+riparr-wifi.service          9.4
+riparr.service               8.4

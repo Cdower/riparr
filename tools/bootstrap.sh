@@ -7,7 +7,10 @@ OUT="$HOME/validation"
 mkdir -p "$OUT"
 
 echo "=== 1. Rescuing first-boot journal (volatile, lost on reboot) ==="
+# The files are the login user's own, so the redirect running unprivileged is the point.
+# shellcheck disable=SC2024
 sudo journalctl -b -o short-precise > "$OUT/firstboot-journal.log" 2>&1
+# shellcheck disable=SC2024
 sudo dmesg > "$OUT/firstboot-dmesg.log" 2>&1
 echo "  saved $(wc -l < "$OUT/firstboot-journal.log") journal lines"
 

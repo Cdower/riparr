@@ -154,10 +154,42 @@ Deliberate limits, so they don't surprise you:
   to your library is built and is a setting — on the reference board it's faster than the
   card, and it takes the card out of the size equation.
 
+## Install it by hand
+
+The Preparer does all of this for you. If you would rather do it yourself -- on a board
+you already have running, or on a machine that is not an appliance -- download a
+release, check it, and run the installer from inside it. Never pipe a script from the
+network into a shell: it runs before anyone has looked at it, and this one runs as root.
+
+```sh
+V=v0.7.0   # the release you want; see the releases page
+curl -fsSLO "https://github.com/jackharvest/riparr/releases/download/$V/riparr-server.tar.gz"
+curl -fsSLO "https://github.com/jackharvest/riparr/releases/download/$V/SHA256SUMS.txt"
+sha256sum --check --ignore-missing SHA256SUMS.txt    # must say riparr-server.tar.gz: OK
+tar xzf riparr-server.tar.gz
+sudo bash riparr/tools/install.sh                     # → http://riparr.local:9797
+```
+
+The checksum proves the archive is the one the release published. To also prove the
+release was built by this repository's own workflow from a commit in it, verify the
+build attestation (needs [GitHub CLI](https://cli.github.com/)):
+
+```sh
+gh attestation verify riparr-server.tar.gz --repo jackharvest/riparr
+```
+
+Once installed, the box checks every later release the same way on its own: the
+checksum always, the attestation as far as it can (see
+[docs/security.md](docs/security.md#what-an-update-verifies)). On a machine that is
+not a dedicated appliance, `tools/install.sh --host` leaves system-wide settings
+alone and turns the power controls off; `tools/uninstall.sh` takes it all back out.
+[docs/hardened-deployment.md](docs/hardened-deployment.md) is the recipe for a box on a
+network you do not fully trust.
+
 ## Run it from source
 
 ```sh
-# On the box, from a checkout
+# On the box, from a checkout (unverified: it installs whatever is in the checkout)
 sudo bash tools/install.sh          # → http://riparr.local:9797
 
 # On your own machine, just to poke at the interface
@@ -169,8 +201,9 @@ uv run --directory tools/preparer shell.py
 
 `server/`, `tools/preparer/` and `tools/flasher/` are separate [uv](https://docs.astral.sh/uv/)
 projects, each with its own `pyproject.toml` and `uv.lock`. `server/requirements.txt` is
-generated from `server/uv.lock` for the box, which installs with pip; edit
-`server/pyproject.toml` and let the pre-commit hook regenerate it.
+generated from `server/uv.lock` for the box, with a hash for every package, and the box
+installs it with `pip install --require-hashes`; edit `server/pyproject.toml` and let
+the pre-commit hook regenerate it.
 
 Before committing, install the hooks once per clone with `prek install`. They run
 [ruff](https://docs.astral.sh/ruff/) over every Python file and

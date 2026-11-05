@@ -1343,6 +1343,8 @@ SYSTEM_COMPONENTS = [
     ("makemkv-run.sh",          "script", "Installing MakeMKV",                 True),
     ("makemkv-install.sh",      "script", "Installing MakeMKV",                 True),
     ("makemkv-manifest.json",   "script", "Which MakeMKV to install, and its checksums", True),
+    ("staged-install.sh",       "script", "Installing MakeMKV and the DVD tools without building as root", True),
+    ("power-allowed.sh",        "script", "Restart and shut down from the web page", True),
     ("dvdtools-install.sh",     "script", "Installing the DVD backup tools",    True),
     ("cdtools-install.sh",      "script", "Installing the music CD tools",      True),
     ("netwatch.sh",             "script", "Recovers Wi-Fi that dies silently",  True),

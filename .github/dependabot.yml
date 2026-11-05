@@ -1,0 +1,30 @@
+# What keeps the pins current. Every action is pinned to a commit SHA (a tag can be
+# moved; a SHA cannot), and the three uv projects are locked, so without this the
+# repository would quietly fall behind on both. One pull request a week each.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # The service: server/uv.lock is the source of truth and server/requirements.txt is
+  # generated from it by the pre-commit hook (with hashes), so an update here is a
+  # lockfile change plus a regenerated requirements file.
+  - package-ecosystem: uv
+    directory: /server
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: uv
+    directory: /tools/preparer
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: uv
+    directory: /tools/flasher
+    schedule:
+      interval: weekly

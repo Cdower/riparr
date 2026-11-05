@@ -46,14 +46,14 @@ echo "$n host(s) with SSH open; testing the key against each"
 
 found=""
 while read -r ip; do
-    if ssh -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=no \
+    if ssh -n -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=no \
            -o UserKnownHostsFile=/dev/null -o ConnectTimeout=4 \
            -o LogLevel=ERROR "root@$ip" \
            'cat /etc/hostname 2>/dev/null; cat /boot/riparr.conf 2>/dev/null' \
            2>/dev/null | grep -q RIPARR_PORT; then
         echo
         echo "FOUND: root@$ip"
-        ssh -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=no \
+        ssh -n -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "root@$ip" \
             'echo "  hostname: $(cat /etc/hostname)"
              echo "  uptime:   $(uptime -p 2>/dev/null || uptime)"

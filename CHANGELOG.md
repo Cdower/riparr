@@ -50,6 +50,24 @@ never the service's virtualenv. The Wi-Fi helper also had a mismatched heredoc s
 last edit to it, so it had not been writing any config at all -- found by the test
 written for the above.
 
+**Every release now proves where it came from, and every install path checks.** The
+release workflow signs a build attestation for the appliance archive and the Preparer
+builds (GitHub's `attest-build-provenance`, through Sigstore), and attaches the
+appliance bundle to the release. The root-side updater verifies it with `gh` or
+sigstore-python when either is on the box, otherwise binds the bundle to the exact
+archive it downloaded and records which level it reached; `RIPARR_UPDATE_REQUIRE_PROVENANCE=1`
+refuses anything short of a full verification. `server/requirements.txt` carries a hash
+for every package and every install path uses `pip install --require-hashes`. The
+README's install-by-hand instructions download the archive and its checksums, verify,
+unpack, then run the installer from inside -- never a script piped from the network.
+MakeMKV and libdvdcss are now compiled by an unprivileged `riparr-build` account into a
+staging directory, and root installs only the files it expects out of it; the MakeMKV
+manifest records where each pinned hash came from and that GuinpinSoft publishes none.
+CI runs shellcheck over every script, `pip-audit` against the lock, the root-helper
+tests as root, and `systemd-analyze security` on every shipped unit against a ceiling
+per unit; every action is pinned to a commit and Dependabot keeps the pins, the lock
+files and the actions current.
+
 **A box can now stream a CPU profile to Grafana Cloud.** Settings → General has a new
 Performance profiling section: paste in the Profiles URL, stack ID and a token, press
 "Save and send a test profile", and the box sends which of its own functions are using

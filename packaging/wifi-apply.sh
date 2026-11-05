@@ -253,7 +253,7 @@ for _ in $(seq 1 20); do
 done
 
 if [ -n "$JOINED" ]; then
-  say done "Connected to $JOINED" ""
+  say "done" "Connected to $JOINED" ""
 else
   cp -a "$BACKUP" "$CONF" 2>/dev/null || true
   wpa_cli -i "$IFACE" reconfigure >/dev/null 2>&1 || \

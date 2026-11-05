@@ -13,6 +13,9 @@
 # cannot say what runs. THIS FILE MUST LIVE OUTSIDE /opt/riparr (apply-system.sh puts it
 # in /usr/local/lib/riparr as root:root 0755).
 #
+# The build runs as the `riparr-build` account into a staging directory, and root
+# copies out only the library it expects -- see packaging/staged-install.sh.
+#
 # Idempotent: anything already installed is left alone, so a second request is cheap.
 set -uo pipefail
 
@@ -31,6 +34,9 @@ DVDCSS_SHA256=7ea556c846b7bfc32d47b41cae56d1863a6b6d5f706bb162778d6f298490977c
 DVDCSS_URL="https://download.videolan.org/pub/videolan/libdvdcss/$DVDCSS_VERSION/libdvdcss-$DVDCSS_VERSION.tar.xz"
 
 install -d -o root -g root -m 0755 "$STATUS_DIR"
+
+# shellcheck source=packaging/staged-install.sh
+. "$(dirname "$0")/staged-install.sh"
 
 say() {   # phase, progress (0..1), message, [detail]
   printf '{"phase":"%s","progress":%s,"message":%s,"detail":%s}\n' \
@@ -83,7 +89,8 @@ if ! has_lib; then
   fi
 
   say building 0.55 "Building the DVD decryption library" "libdvdcss $DVDCSS_VERSION"
-  work=$(mktemp -d)
+  install -d -o root -g root -m 0755 /var/cache/riparr
+  work=$(mktemp -d /var/cache/riparr/libdvdcss-build.XXXXXX)
   trap 'rm -rf "$work"' EXIT
   curl -fsSL --retry 3 --connect-timeout 20 -o "$work/libdvdcss.tar.xz" "$DVDCSS_URL" \
     >>"$LOG" 2>&1 || fail "libdvdcss couldn't be downloaded from videolan.org."
@@ -93,17 +100,26 @@ if ! has_lib; then
   # --libdir=lib puts it in /usr/local/lib, which every Debian's ld.so.conf includes.
   # Left to itself meson picks a multiarch directory on Debian, which is also indexed
   # -- but "also" is a thing to verify, and this is a thing that is simply true.
-  ( cd "$work/libdvdcss-$DVDCSS_VERSION" \
-    && meson setup build --prefix=/usr/local --libdir=lib --buildtype=release \
-    && ninja -C build \
-    && ninja -C build install ) >>"$LOG" 2>&1 || fail "libdvdcss didn't build."
+  #
+  # Built and staged as the build user; root installs only the library out of the
+  # staging tree.
+  ensure_build_user
+  src="$work/libdvdcss-$DVDCSS_VERSION"
+  mkdir -p "$work/stage"
+  chown -R "$BUILD_USER" "$src" "$work/stage"
+  ( as_build_user "$src" meson setup build --prefix=/usr/local --libdir=lib --buildtype=release \
+    && as_build_user "$src" ninja -C build \
+    && as_build_user "$src" env DESTDIR="$work/stage" ninja -C build install ) >>"$LOG" 2>&1 \
+    || fail "libdvdcss didn't build."
+  install_staged "$work/stage" 'usr/local/lib/libdvdcss.so*' >>"$LOG" 2>&1 \
+    || echo "some staged files were not installed (see above)" >>"$LOG"
   ldconfig
 fi
 
 # Prove it, rather than trusting the steps above: the binary is on PATH and the loader
 # can find the library by the name libdvdread will ask for.
 if command -v dvdbackup >/dev/null 2>&1 && has_lib; then
-  say done 1 "DVD backups are ready." ""
+  say "done" 1 "DVD backups are ready." ""
 else
   fail "The install finished, but the tools still can't be found."
 fi

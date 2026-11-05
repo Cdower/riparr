@@ -77,7 +77,7 @@ echo "the default share mounts at the library path"
 run
 check "only the default, at the library path" "$(mounted)" "/srv/library //nas-a/Media;"
 run
-check "the password file does not outlive the mount" "$(ls "$T" | grep -c '^riparr-cred\.')" "0"
+check "the password file does not outlive the mount" "$(find "$T" -maxdepth 1 -name 'riparr-cred.*' | wc -l)" "0"
 run
 check "a second run leaves it alone" "$(mounted)" "/srv/library //nas-a/Media;"
 check "a second run neither unmounts nor mounts" "$(calls)" ""
