@@ -213,6 +213,8 @@ demand.
 ## Documents
 
 - **[User guide](docs/guide/README.md)** — what to buy, how to set it up, what to do when it sulks
+- **[Security](docs/security.md)** — what the service can and cannot do, the one-way doors, what an update verifies
+- **[Hardened deployment](docs/hardened-deployment.md)** — the recipe for a box on a network you do not fully trust
 - **[Design notes](docs/design/)** — why things work the way they do
 
 ## Support
