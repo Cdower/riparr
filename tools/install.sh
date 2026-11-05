@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Install or upgrade Riparr on the appliance.
 #
-#   curl -fsSL https://raw.githubusercontent.com/jackharvest/riparr/main/tools/install.sh | sudo bash
+# Run it from inside a release you have verified (the README has the four lines:
+# download the archive and SHA256SUMS.txt, `sha256sum -c`, unpack, then):
+#
+#   sudo bash riparr/tools/install.sh
+#
+# Never `curl | bash`: a script piped from the network runs before anyone has checked
+# what it is, and this one runs as root.
 #
 # Safe to run again: re-running upgrades in place and keeps your database, settings and
 # shares. Reads the port the preparer wrote to the boot partition, if it is there.
@@ -19,7 +25,7 @@ info() { printf '  %s\n' "$*"; }
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[31m✗ %s\033[0m\n\n' "$*" >&2; exit 1; }
 
-[ "$(id -u)" = 0 ] || die "Run this with sudo:  curl -fsSL … | sudo bash"
+[ "$(id -u)" = 0 ] || die "Run this with sudo:  sudo bash tools/install.sh"
 [ "$(uname -s)" = Linux ] || die "Riparr installs on the appliance. This is $(uname -s)."
 
 # ── where the boot partition is mounted differs by OS version ──
@@ -152,83 +158,63 @@ ok "user '$RIPARR_USER' ready; staging at /srv/staging"
 # ── 3. source ──
 say "3/6  Riparr"
 UPGRADE=no
-[ -d "$INSTALL_DIR" ] && UPGRADE=yes
+[ -e "$INSTALL_DIR/current" ] || [ -d "$INSTALL_DIR/server" ] && UPGRADE=yes
 
-# A checkout sitting next to this script wins over the network. The repository may not be
-# published yet, and even when it is, someone who copied a working tree to the device
-# meant to install *that*.
+# A checkout sitting next to this script wins over the network. Someone who copied a
+# working tree to the device meant to install *that* -- and the verified install path
+# in the README is exactly that: download the release archive, check it, unpack it,
+# run this script from inside it.
 SRC=""
 if [ -f "$(dirname "$0")/../server/riparr/main.py" ]; then
   SRC="$(cd "$(dirname "$0")/.." && pwd)"
 fi
-
-# Re-installing throws the tree away, so park the virtualenv and put it back afterwards.
-# Rebuilding it costs several minutes of wheel installs on a Zero 2 W.
-KEEP_VENV=""
-if [ "$SRC" != "$INSTALL_DIR" ] && [ -d "$INSTALL_DIR/.venv" ]; then
-  KEEP_VENV=$(mktemp -d)
-  mv "$INSTALL_DIR/.venv" "$KEEP_VENV/.venv"
-fi
-
-if [ -n "$SRC" ] && [ "$SRC" = "$INSTALL_DIR" ]; then
-  info "installing in place from $SRC"
-elif [ -n "$SRC" ]; then
-  info "installing from $SRC"
-  rm -rf "$INSTALL_DIR"
-  mkdir -p "$INSTALL_DIR"
-  # --exclude .venv: a working tree copied off a Mac carries a virtualenv full of
-  # x86/arm64-Darwin binaries that would sit in /opt doing nothing but confusing people.
-  tar -cf - -C "$SRC" --exclude=.venv . | tar -xf - -C "$INSTALL_DIR"
-elif [ -d "$INSTALL_DIR/.git" ]; then
-  info "updating existing install"
-  if git -C "$INSTALL_DIR" fetch --quiet origin "$BRANCH" 2>/dev/null; then
-    git -C "$INSTALL_DIR" reset --hard --quiet "origin/$BRANCH"
-  else
-    # Not fatal: an unreachable origin should reinstall what is already here, not abort
-    # halfway and leave the box without a service.
-    info "could not reach $REPO_URL — keeping the copy already installed"
-  fi
-else
-  info "cloning $REPO_URL"
-  rm -rf "$INSTALL_DIR"
-  git clone --quiet --depth 1 --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR" \
+CLONE=""
+if [ -z "$SRC" ]; then
+  # No tree beside the script: fetch the branch. This is the unverified developer
+  # path -- git over HTTPS, no checksum, no attestation -- and it says so. The README's
+  # install path never comes through here.
+  info "no checkout beside this script; cloning $REPO_URL ($BRANCH) -- unverified"
+  CLONE=$(mktemp -d)
+  git clone --quiet --depth 1 --branch "$BRANCH" "$REPO_URL" "$CLONE/riparr" \
     || die "Could not download Riparr from $REPO_URL. Check the network and try again."
+  SRC="$CLONE/riparr"
 fi
+VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$SRC/server/riparr/__init__.py" 2>/dev/null || echo "")
+[ -n "$VERSION" ] || die "Could not read the version from $SRC/server/riparr/__init__.py"
+info "installing Riparr $VERSION from $SRC"
 
-[ -n "$KEEP_VENV" ] && { rm -rf "$INSTALL_DIR/.venv"; mv "$KEEP_VENV/.venv" "$INSTALL_DIR/.venv"; rmdir "$KEEP_VENV"; }
-VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$INSTALL_DIR/server/riparr/__init__.py" 2>/dev/null || echo "?")
-ok "Riparr $VERSION in $INSTALL_DIR"
-
-# ── 4. python environment ──
+# ── 4. the release tree and its python environment ──
 say "4/6  Python environment"
-[ -d "$INSTALL_DIR/.venv" ] || python3 -m venv "$INSTALL_DIR/.venv"
-"$INSTALL_DIR/.venv/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
+# /opt/riparr belongs to root. The tree goes into /opt/riparr/releases/<version>, a
+# root-owned virtualenv is built inside it with every package checked against its
+# pinned hash, and /opt/riparr/current is pointed at it. The service account can read
+# the code it runs and cannot write a byte of it; the in-app updater asks root
+# (riparr-update.sh) to do the same for each release it downloads and verifies. See
+# packaging/riparr-update.sh and docs/security.md.
+#
+# The two helpers that do this are installed first, from the tree being installed:
+# whoever runs `sudo bash tools/install.sh` has already decided to run this tree as
+# root. Every other helper and unit is installed by apply-system.sh, which refuses
+# anything in the tree that is not root-owned by then.
+install -d -o root -g root -m 0755 /usr/local/lib/riparr
+install -o root -g root -m 0755 "$SRC/packaging/riparr-update.sh" /usr/local/lib/riparr/riparr-update.sh
+install -o root -g root -m 0755 "$SRC/packaging/apply-system.sh" /usr/local/lib/riparr/apply-system.sh
 info "installing dependencies (a few minutes on a Zero 2 W)"
-"$INSTALL_DIR/.venv/bin/pip" install --quiet -r "$INSTALL_DIR/server/requirements.txt" \
-  || die "Dependencies failed to install. Re-run to try again."
-chown -R "$RIPARR_USER":"$RIPARR_USER" "$INSTALL_DIR"
-ok "environment ready"
+RIPARR_INSTALL_DIR="$INSTALL_DIR" /usr/local/lib/riparr/riparr-update.sh \
+    --from-tree "$SRC" --version "$VERSION" --no-restart \
+  || die "Riparr could not be installed. The message above says why; re-run to try again."
+[ -n "$CLONE" ] && rm -rf "$CLONE"
+ok "Riparr $VERSION in $INSTALL_DIR/releases/$VERSION (root-owned; current -> it)"
 
 # ── 5. service ──
 say "5/6  Service"
 # Everything that lives outside /opt/riparr -- units, and the root-side helper scripts
-# the one-way doors call -- is installed by one script that the in-app updater also
-# runs. It used to be inlined here, which meant a release that added a unit installed
-# it on a fresh card and silently did not on a box that updated from the web page.
-# One definition, two callers. See packaging/apply-system.sh.
+# the one-way doors call -- was installed by apply-system.sh as the last step of the
+# release install above. One definition, two callers: this script, and the update
+# door after an in-app update. See packaging/apply-system.sh.
 #
-# The scripts deliberately go to /usr/local/lib/riparr, NOT /opt/riparr: that tree is
-# owned by the riparr account, and a root unit executing from it would hand the service
-# a way to run anything as root.
-#
-# makemkv-install.sh is the exception -- it comes from tools/, not packaging/, so it is
-# placed here rather than in the shared list.
-install -d -o root -g root -m 0755 /usr/local/lib/riparr
-install -o root -g root -m 0755 "$INSTALL_DIR/tools/makemkv-install.sh" \
-        /usr/local/lib/riparr/makemkv-install.sh
-install -o root -g root -m 0755 "$INSTALL_DIR/packaging/apply-system.sh" \
-        /usr/local/lib/riparr/apply-system.sh
-RIPARR_INSTALL_DIR="$INSTALL_DIR" /usr/local/lib/riparr/apply-system.sh
+# The scripts deliberately go to /usr/local/lib/riparr, NOT /opt/riparr, and
+# apply-system.sh refuses any that are not root-owned and closed to other writers.
 
 # ── a dead host must not cost two minutes ──
 # MakeMKV contacts its own server on every invocation. That server has been returning
@@ -259,9 +245,9 @@ fi
 
 # apply-system.sh already did daemon-reload and enabled every path unit and the
 # watchdog. What is left is the web service itself, which it deliberately does not
-# start -- an install has more to do first (see below), and a restart belongs at the
+# start -- an install has more to do first (see above), and a restart belongs at the
 # end of that, not in the middle of it.
-ok "MakeMKV, restart, shut down, Wi-Fi and the USB-C fix all work from the web interface"
+ok "MakeMKV, updates, restart, shut down, Wi-Fi and the USB-C fix all work from the web interface"
 ok "the Wi-Fi watchdog is running — a radio that dies silently gets recovered"
 systemctl enable --quiet "$SERVICE"
 # The data directory belongs to the service account, all of it. A root helper that

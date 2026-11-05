@@ -27,7 +27,7 @@ set -uo pipefail
 
 DB="${RIPARR_DB:-/var/lib/riparr/riparr.db}"
 MOUNT="${RIPARR_LIBRARY_MOUNT:-/srv/library}"
-PY="${RIPARR_PYTHON:-/opt/riparr/.venv/bin/python}"
+PY="${RIPARR_PYTHON:-python3}"
 
 log() { echo "riparr-mount: $*"; }
 

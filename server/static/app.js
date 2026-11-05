@@ -4653,63 +4653,60 @@ function wireContent(section, sub) {
   const inst = $("#upd-install");
   if (inst) inst.onclick = async () => {
     inst.disabled = true;
+    const out = $("#upd-result");
+    const show = (cls, msg, detail) => {
+      if (!out) return;
+      out.hidden = false;
+      out.className = `alert ${cls}`;
+      out.innerHTML = `<b>${esc(msg || "")}</b>${
+        detail ? `<div class="why" style="margin-top:6px;user-select:text">${esc(detail)}</div>` : ""}`;
+    };
     let r;
     try { r = await api.post("/api/update/install"); }
     catch (e) { r = { ok: false, message: e.message || "The update failed." }; }
-    // Three outcomes, not two. A swap the box could not restart is not a failure --
-    // the new version is on disk and one restart away -- but reporting it as a plain
-    // success is the bug that had somebody watching "Riparr is restarting" forever.
-    toast(r.message, r.ok && !r.needs_restart ? "ok" : r.ok ? "warn" : "bad");
-
-    if (r.ok && r.needs_restart) {
-      const out0 = $("#upd-result");
-      if (out0) {
-        out0.hidden = false;
-        out0.className = "alert warn";
-        out0.innerHTML = `<b>${esc(r.message)}</b>
-          <div class="why" style="margin-top:8px">
-            <button class="btn" id="upd-restart">Restart Riparr now</button>
-          </div>`;
-        const rb = $("#upd-restart");
-        if (rb) rb.onclick = () => powerAction("reboot", "Restarting to finish the update",
-          "Riparr is restarting. It comes back on the new version in about a minute. "
-          + "This page reconnects on its own.");
-      }
+    if (!r.ok) {
+      // A toast is the wrong place for the only copy of a diagnosis. It vanishes, it
+      // cannot be selected, and `detail` -- the one field that says *why* -- used to
+      // be dropped on the floor entirely.
+      show("warn", r.message, (r.detail || "") + "\n\nThere is a second way in, and it does "
+        + "not depend on anything here working: open Riparr Preparer on your computer and "
+        + "choose \u201cSet up a box that\u2019s already running\u201d. It installs over SSH and "
+        + "keeps your login, settings, rip history and the MakeMKV build.");
       inst.disabled = false;
       return;
     }
-
-    // The box is about to go away on its own. Cover the page and wait for it, rather
-    // than leaving somebody looking at the old version number wondering whether it
-    // worked -- which is what a silent success looks like from the outside, and is
-    // indistinguishable from the failure it replaced.
-    //
-    // A service restart is ~2s and a reboot ~60s, so the poll starts at very different
-    // times; `restarted` says which happened.
-    if (r.ok && r.restarted) {
-      showWaiting(r.restarted === "reboot"
-        ? "Updated. The box is restarting \u2014 about a minute."
-        : "Updated. Riparr is restarting\u2026");
-      waitForBoxBack({ startAfter: r.restarted === "reboot" ? 12000 : 2500 });
-      return;
-    }
-
-    // A toast is the wrong place for the only copy of a diagnosis. It vanishes, it
-    // cannot be selected, and `detail` — the one field that says *why* — was being
-    // dropped on the floor entirely: an update that failed on a permission error read
-    // as "The update failed. Nothing was changed." and nothing else, anywhere.
-    const out = $("#upd-result");
-    if (out) {
-      out.hidden = false;
-      out.className = `alert ${r.ok ? "ok" : "warn"}`;
-      out.innerHTML = `<b>${esc(r.message || "")}</b>${
-        r.detail ? `<div class="why" style="margin-top:6px;user-select:text">${esc(r.detail)}</div>` : ""}${
-        r.ok ? "" : `<div class="why" style="margin-top:8px">There is a second way in, and
-          it does not depend on anything here working: open <b>Riparr Preparer</b> on your
-          computer and choose <b>Set up a box that's already running</b>. It installs over
-          SSH and keeps your login, settings, rip history and the MakeMKV build.</div>`}`;
-    }
-    inst.disabled = false;
+    // The root side is doing the work now (download, checksum, provenance, unpack,
+    // pip, swap, restart) and says where it is through a status file. Poll it. The
+    // request that asked for this came straight back, so nothing here depends on a
+    // connection staying open for the minutes a Zero 2 W needs.
+    const since = Math.floor(Date.now() / 1000) - 2;
+    show("", `Installing ${esc(r.version || "")}\u2026`);
+    const poll = async () => {
+      let st = null;
+      try { st = (await api.get("/api/update/install")).state; }
+      catch (e) {
+        // The service is being restarted onto the new version: that is the success
+        // path, and the box-back wait handles it.
+        showWaiting("Updated. Riparr is restarting\u2026");
+        waitForBoxBack({ startAfter: 2500 });
+        return;
+      }
+      if (!st || (st.at || 0) < since) { setTimeout(poll, 2000); return; }
+      if (st.phase === "done") {
+        showWaiting("Updated. Riparr is restarting\u2026");
+        waitForBoxBack({ startAfter: 2500 });
+        return;
+      }
+      if (st.phase === "error") {
+        show("warn", st.message, st.detail);
+        inst.disabled = false;
+        return;
+      }
+      const pct = Math.round((st.progress || 0) * 100);
+      show("", `${st.message || st.phase} (${pct}%)`, st.detail);
+      setTimeout(poll, 2000);
+    };
+    setTimeout(poll, 1500);
   };
 
   const imp = $("#import-btn");

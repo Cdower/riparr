@@ -26,10 +26,14 @@
 set -uo pipefail
 
 RUN=/run/riparr
-STATE="$RUN/cdtools.state"
-LOG="$RUN/cdtools.log"
+# Progress and results go to a directory that is root's, never into /run/riparr: that
+# one is the service's, and a root helper writing into it could be made to write
+# through a symlink the service planted. The service reads this; it cannot write it.
+STATUS_DIR="${RIPARR_STATUS_DIR:-/run/riparr-status}"
+STATE="$STATUS_DIR/cdtools.state"
+LOG="$STATUS_DIR/cdtools.log"
 
-mkdir -p "$RUN"
+install -d -o root -g root -m 0755 "$STATUS_DIR"
 
 say() {   # phase, progress (0..1), message, [detail]
   printf '{"phase":"%s","progress":%s,"message":%s,"detail":%s}\n' \

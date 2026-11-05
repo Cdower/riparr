@@ -1251,8 +1251,33 @@ def wifi_psk(ssid, passphrase):
 
 RUN_DIR = "/run/riparr"
 WIFI_REQUEST = "/run/riparr/wifi.request"
-WIFI_STATE = "/run/riparr/wifi.state"
 WIFI_UNIT = "/etc/systemd/system/riparr-wifi.path"
+
+# ── where root answers ──
+#
+# /run/riparr is this service's own runtime directory, and that is exactly why root
+# must not write into it. A root helper that wrote its progress file there could be
+# made to write through a symlink this account planted -- a compromised service
+# turning "makemkv.state" into a link to /etc/shadow and waiting for the next build.
+# So every root-side helper publishes into a directory that is root's, world-readable
+# and closed to everyone else, and this side only ever reads from it. The requests
+# still go the other way, through /run/riparr; root reads those and never trusts what
+# is in them beyond one strictly-matched word.
+#
+# The legacy path is still looked at, for one window: a box that has just updated,
+# where the helpers that wrote the old place have not been replaced yet.
+STATUS_DIR = os.environ.get("RIPARR_STATUS_DIR", "/run/riparr-status")
+
+
+def status_path(name):
+    """Where a root helper's `name` (makemkv.state, wifi.state, ...) is right now."""
+    new = os.path.join(STATUS_DIR, name)
+    if os.path.exists(new):
+        return new
+    old = os.path.join(RUN_DIR, name)
+    if os.path.exists(old):
+        return old
+    return new
 
 
 # ── what should be installed outside /opt/riparr, and whether it is ──
@@ -1279,6 +1304,9 @@ SYSTEM_COMPONENTS = [
     ("riparr-remount.service",  "unit",   "The Reconnect button",               True),
     ("riparr-provision.path",   "unit",   "Applies system changes after an update", True),
     ("riparr-provision.service","unit",   "Applies system changes after an update", True),
+    ("riparr-update.path",      "unit",   "Installing updates from the web page", True),
+    ("riparr-update.service",   "unit",   "Installing updates from the web page", True),
+    ("riparr.slice",            "unit",   "Resource limits for everything Riparr runs", True),
     ("riparr-netwatch.service", "unit",   "Recovers Wi-Fi that dies silently",  True),
     ("riparr-wifi.path",        "unit",   "Changing Wi-Fi networks",            True),
     ("riparr-wifi.service",     "unit",   "Changing Wi-Fi networks",            True),
@@ -1306,6 +1334,7 @@ SYSTEM_COMPONENTS = [
     ("netwatch-settings.py",    "script", "Your Wi-Fi recovery settings",       True),
     ("powerkey.py",             "script", "The power button",                   True),
     ("mount-library.sh",        "script", "Mounts your library share",          True),
+    ("riparr-update.sh",        "script", "Installing updates from the web page", True),
     ("apply-system.sh",         "script", "Installs the parts on this list",    True),
 ]
 
@@ -1416,8 +1445,9 @@ def provision_bridge_available():
     sat in packaging/ looking installed.
 
     Same one-way door as the rest: one empty file, nothing in it to parse. The request
-    means "install what is in /opt/riparr/packaging now", and that arrived through a
-    checksum-verified release archive.
+    means "install what is in /opt/riparr/packaging now". That tree is root's -- the
+    root-side update helper put it there after checking the release's checksum and
+    provenance -- and apply-system.sh refuses anything in it that is not.
     """
     return os.path.exists(PROVISION_UNIT) and os.path.isdir(RUN_DIR) and os.access(
         RUN_DIR, os.W_OK)
@@ -1438,6 +1468,57 @@ def request_provision():
         return True
     except OSError:
         return False
+
+
+UPDATE_REQUEST = "/run/riparr/update.request"
+UPDATE_UNIT = "/etc/systemd/system/riparr-update.path"
+# A release tag and nothing else. The root side applies the same pattern before it
+# builds a URL out of the word; this side applies it so a bad tag is refused with a
+# sensible message instead of a silent no-op on the other side of the door.
+UPDATE_TAG = re.compile(r"^v?[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$")
+
+
+def update_door_available():
+    """Can this process ask the root side to install a release?
+
+    The one door that carries a word. The in-app updater used to swap /opt/riparr
+    itself, as this account, and then ask root to install units from the tree it had
+    just written -- so a compromised service could hand root anything. Now this side
+    names a release tag and the root side (packaging/riparr-update.sh) fetches,
+    verifies, unpacks and installs it into a tree this account can only read.
+    """
+    return os.path.exists(UPDATE_UNIT) and os.path.isdir(RUN_DIR) and os.access(
+        RUN_DIR, os.W_OK)
+
+
+def request_update(tag):
+    """Ask the root side to install release `tag`. True if the request was placed.
+
+    Refuses anything that is not a version: the file's whole content is the tag, and
+    the root side matches it against the same pattern before using it anywhere.
+    """
+    if not isinstance(tag, str) or not UPDATE_TAG.fullmatch(tag):
+        return False
+    if MOCK:
+        return True
+    if not update_door_available():
+        return False
+    try:
+        with open(UPDATE_REQUEST, "w") as f:
+            f.write(tag + "\n")
+        return True
+    except OSError:
+        return False
+
+
+def update_state():
+    """What the root side said about the last update, or None if it never ran."""
+    try:
+        with open(status_path("update.state")) as f:
+            st = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return st if isinstance(st, dict) and "phase" in st else None
 
 
 def wifi_bridge_available():
@@ -1486,7 +1567,7 @@ def wifi_apply():
     return {"ok": True, "message": "Applying"}
 
 
-WIFI_MERGED = "/run/riparr/wifi.merged.json"
+WIFI_MERGED = "wifi.merged.json"
 
 
 def wifi_adopt():
@@ -1507,7 +1588,7 @@ def wifi_adopt():
     if MOCK:
         return False
     try:
-        with open(WIFI_MERGED) as f:
+        with open(status_path(WIFI_MERGED)) as f:
             merged = json.load(f)
     except (OSError, ValueError):
         return False
@@ -1530,7 +1611,7 @@ def wifi_apply_state():
     if MOCK:
         return _MOCK_WIFI["state"]
     try:
-        with open(WIFI_STATE) as f:
+        with open(status_path("wifi.state")) as f:
             st = json.load(f)
     except (OSError, ValueError):
         return None

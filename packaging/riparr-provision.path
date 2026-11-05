@@ -9,8 +9,10 @@ Documentation=https://github.com/jackharvest/riparr
 # runtime directory, and that is the entire interface.
 #
 # Nothing in the file is read. The request means exactly "apply the units that are in
-# /opt/riparr/packaging now", and those arrived through a signed, checksum-verified
-# release archive — so a compromised service can ask for the code it already has to be
+# /opt/riparr/packaging now". That tree is root's: the root-side update helper put it
+# there after checking the release's checksum and provenance, and apply-system.sh
+# refuses to install anything in it that is not root-owned and closed to other
+# writers. So a compromised service can ask for the code root already verified to be
 # installed, and nothing else.
 PathExists=/run/riparr/provision.request
 

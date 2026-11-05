@@ -1,0 +1,29 @@
+[Unit]
+Description=Install a Riparr release on request
+Documentation=https://github.com/jackharvest/riparr
+# The download needs the network up.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Slice=riparr.slice
+Environment=HOME=/root
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# RIPARR_REPO, and the optional RIPARR_UPDATE_REQUIRE_PROVENANCE=1, come from the
+# same configuration the service reads. Root reads these files; the service cannot
+# write them.
+EnvironmentFile=-/boot/firmware/riparr.conf
+EnvironmentFile=-/boot/riparr.conf
+EnvironmentFile=-/etc/default/riparr
+# The request file is consumed by the helper itself, first thing, whatever it says:
+# a request that cannot be parsed must not re-trigger this unit forever.
+ExecStart=/usr/local/lib/riparr/riparr-update.sh --request /run/riparr/update.request
+# A download plus a pip install on a Zero 2 W can take a while; a hung download is
+# cut off by curl's own --max-time long before this.
+TimeoutStartSec=1800
+Nice=10
+
+# Not sandboxed, for the reason recorded in riparr-wifi.service: this writes
+# /etc/systemd/system and calls systemctl, and a namespaced unit would do both
+# privately and invisibly.

@@ -10,6 +10,25 @@ bother updating.
 
 ## Unreleased
 
+**Root never runs code the web service could have written.** Until now the in-app
+updater replaced `/opt/riparr` itself, as the unprivileged service account, and then
+asked a root unit to install the systemd units and helper scripts from the tree it had
+just written. The one-way doors were sound; what they opened onto was not: anything that
+got control of the service could edit a unit file, touch `provision.request`, and run as
+root. Now `/opt/riparr` belongs to root. Each release is fetched, checked against its
+published checksum and its build attestation, unpacked and pip-installed (every package
+against its pinned hash) by a root-side helper into `/opt/riparr/releases/<version>`,
+and `/opt/riparr/current` is pointed at it; the service's whole say in an update is one
+release tag in one request file. `apply-system.sh` refuses to install any unit or
+helper that is not a root-owned, unwritable regular file, by name and with a non-zero
+exit. Root-side helpers publish their progress into a root-owned `/run/riparr-status`
+instead of the service's own runtime directory, so none of them can be made to write
+through a planted symlink. A box that updated from the web page before this version is
+adopted onto the new layout once, on its first provision, and says so in the log; the
+previous release is kept so `sudo riparr-update.sh --rollback` is a symlink swap.
+`server/requirements.txt` now carries hashes and is installed with `--require-hashes`.
+See `docs/security.md` for the threat model and the list of doors.
+
 **A box can now stream a CPU profile to Grafana Cloud.** Settings → General has a new
 Performance profiling section: paste in the Profiles URL, stack ID and a token, press
 "Save and send a test profile", and the box sends which of its own functions are using

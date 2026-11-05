@@ -2,18 +2,16 @@
 Updates, against the official repository.
 
 An appliance with no screen must be able to update itself without the user finding a
-terminal, and must never leave itself unbootable if the download is bad. So: check,
-download, verify the hash, stage, swap, restart. The running version is never deleted
-until the new one is in place.
+terminal, and must never leave itself unbootable if the download is bad. This side
+checks GitHub for a release and asks for it by tag; the root side
+(packaging/riparr-update.sh) downloads, verifies, unpacks, swaps and restarts, and the
+running version is never touched until the new one is in place and checked.
 """
 import hashlib
 import json
 import os
 import re
-import shutil
-import subprocess
-import tarfile
-import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -23,7 +21,6 @@ from . import platform as P
 REPO = "jackharvest/riparr"
 GITHUB_API = "https://api.github.com"
 INSTALL_DIR = os.environ.get("RIPARR_INSTALL_DIR", "/opt/riparr")
-SERVICE = "riparr.service"
 
 
 def current_version():
@@ -50,7 +47,8 @@ def check(repo=REPO, timeout=8):
         return {"status": "offline", "current": __version__, "repo": repo,
                 "message": "Could not reach GitHub: %s" % e}
 
-    tag = (data.get("tag_name") or "").lstrip("v")
+    tag_name = data.get("tag_name") or ""
+    tag = tag_name.lstrip("v")
     assets = data.get("assets") or []
     payload = _pick_asset(assets)
     # The tag is the release's name, not this half's version. The web interface and the
@@ -62,6 +60,9 @@ def check(repo=REPO, timeout=8):
         "current": __version__,
         "latest": latest,
         "tag": tag,
+        # The tag as GitHub spells it, because it is what the root side builds the
+        # download URL from -- `tag` above has the "v" stripped for display.
+        "tag_name": tag_name,
         "repo": repo,
         "notes": data.get("body") or "",
         "published": data.get("published_at"),
@@ -85,10 +86,6 @@ def check(repo=REPO, timeout=8):
 # has no screen to say so.
 SERVER_ASSET = "riparr-server.tar.gz"
 
-# Both live *inside* the install directory, which is the only place this service has
-# permission to create anything. See install().
-VENV_DIR = ".venv"
-PREV_DIR = ".previous"
 
 
 def _pick_asset(assets):
@@ -99,24 +96,32 @@ def _pick_asset(assets):
     return None
 
 
-def install(repo=REPO):
-    """Download, verify, stage, swap, reinstall dependencies, restart.
+# How long the request that started an update waits for the root side to finish
+# before answering "still running". A download plus a pip install on a Zero 2 W is
+# minutes, not seconds; the state file keeps saying what is happening either way.
+INSTALL_TIMEOUT = 25 * 60
 
-    Refuses to run anywhere but the appliance -- swapping /opt/riparr on a development
-    Mac would be a genuinely destructive surprise.
 
-    Two things here are not obvious and both were learned the hard way:
+def install(repo=REPO, wait=True, timeout=INSTALL_TIMEOUT, poll=1.0):
+    """Ask the root side to install the latest release, and wait for its answer.
 
-    **The virtualenv lives inside the directory being replaced.** riparr.service starts
-    `/opt/riparr/.venv/bin/python`, and a release tarball has no `.venv` in it. Moving
-    the old directory aside and unpacking the new one therefore removes the interpreter
-    the service is defined to run, and a headless box with no screen simply stops
-    coming back. The venv is carried across, exactly as `tools/install.sh` does on a
-    fresh install.
+    Refuses to run anywhere but the appliance -- asking for /opt/riparr to be replaced
+    on a development Mac would be a genuinely destructive surprise.
 
-    **A refused update is a success and a broken one is not.** Every failure path leaves
-    the running version untouched, and if the swap completes but the new version cannot
-    install its dependencies, the previous directory is moved back before returning.
+    This process used to do the download, the checksum, the swap and the pip install
+    itself, as the service account, and then ask root to install units from the tree
+    it had just written. That was the hole: a compromised service could write anything
+    into packaging/ and have root install it. Now this side writes exactly one word --
+    the release tag -- into its request file, and `packaging/riparr-update.sh` does the
+    rest as root against a tree this account cannot write: fetch, verify the checksum
+    and the build provenance, unpack, `pip install --require-hashes`, swap, apply the
+    system units, restart. Progress comes back through a root-owned status file, which
+    is what this polls.
+
+    The answer is honest about what happened. "done" with a version means the new
+    release is on disk and the service is about to restart. "error" carries the root
+    side's reason. A timeout means the work is still going on and the page should
+    look again, not that it failed.
     """
     if not P.IS_APPLIANCE:
         return {"ok": False,
@@ -125,237 +130,59 @@ def install(repo=REPO):
     info = check(repo)
     if info["status"] != "update":
         return {"ok": False, "message": info.get("message", "Nothing to install.")}
-    asset = info.get("asset")
-    if not asset:
+    if not info.get("asset"):
         return {"ok": False,
                 "message": "That release has no appliance archive, so there is nothing "
                            "to install. The download page has the desktop app only."}
-
-    # Asked before anything is downloaded or moved. The service owns /opt/riparr but not
-    # /opt, and finding that out half way through an update is how the venv was lost.
-    if not os.access(INSTALL_DIR, os.W_OK):
+    tag = info.get("tag_name") or ""
+    if not P.UPDATE_TAG.fullmatch(tag):
         return {"ok": False,
-                "message": "Riparr cannot update itself: %s is not writable by the "
-                           "service. Nothing was changed." % INSTALL_DIR,
-                "detail": "Re-run the installer over SSH to repair the permissions: "
-                          "sudo bash %s/tools/install.sh" % INSTALL_DIR}
+                "message": "That release's tag (%r) is not a version, so it was not "
+                           "requested. Nothing was changed." % tag}
+    if not P.update_door_available():
+        return {"ok": False,
+                "message": "This box was installed before updates moved to the root "
+                           "side, so the web page cannot install this one. Nothing was "
+                           "changed.",
+                "detail": "Once, over SSH, from a verified release archive (see the "
+                          "README): sudo bash riparr/tools/install.sh. After that, "
+                          "updates install from here again."}
 
-    # Stand somewhere that will still exist in a moment.
-    #
-    # riparr.service sets WorkingDirectory=/opt/riparr/server, and the swap below MOVES
-    # that directory into .previous. A process's cwd follows the directory it is in, so
-    # this process ends up standing inside .previous -- and the next update deletes
-    # .previous, leaving it in a directory that no longer exists. Every subprocess then
-    # inherits a dead cwd and dies on it: pip reported
-    # "OSError: [Errno 2] No such file or directory" and the update rolled back, with
-    # nothing wrong with the venv or the requirements at all.
-    #
-    # INSTALL_DIR is the right place to stand because only its *contents* are moved --
-    # the directory itself is never touched. This also covers makemkvcon and every other
-    # subprocess spawned before the restart lands, not just pip.
-    try:
-        os.chdir(INSTALL_DIR)
-    except OSError:
-        pass
+    started = int(time.time())
+    if not P.request_update(tag):
+        return {"ok": False,
+                "message": "Could not ask the system to install the update. Nothing "
+                           "was changed."}
+    if not wait:
+        return {"ok": True, "pending": True, "version": info["latest"],
+                "message": "Installing %s in the background." % info["latest"]}
 
-    tmp = tempfile.mkdtemp(prefix="riparr-update-")
-    backup = os.path.join(INSTALL_DIR, PREV_DIR)
-    swapped = False
-    try:
-        archive = os.path.join(tmp, asset["name"])
-        _download(asset["url"], archive)
-
-        # Fail closed. If the published checksums cannot be read, that is a reason to
-        # stop, not a reason to proceed without checking -- this archive is about to
-        # become the code the box runs.
-        expected = _expected_hash(asset["name"], info.get("sums_url"),
-                                  repo, info.get("tag"))
-        if not expected:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(poll)
+        st = P.update_state()
+        if not st or (st.get("at") or 0) < started:
+            continue                    # an older run's result, or nothing yet
+        phase = st.get("phase")
+        if phase == "done":
+            return {"ok": True, "message": st.get("message") or
+                    "Updated to %s. Riparr is restarting." % st.get("version", info["latest"]),
+                    "version": st.get("version") or info["latest"],
+                    "provenance": st.get("provenance"),
+                    "restarted": "restart", "needs_restart": False, "provisioned": True}
+        if phase == "error":
             return {"ok": False,
-                    "message": "That release publishes no checksum for the appliance "
-                               "archive, so the download cannot be verified. Nothing "
-                               "was changed."}
-        actual = _sha256(archive)
-        if actual != expected:
-            return {"ok": False,
-                    "message": "The download did not match its published checksum. "
-                               "Nothing was changed.",
-                    "detail": "expected %s, got %s" % (expected[:16], actual[:16])}
-
-        staged = os.path.join(tmp, "staged")
-        os.makedirs(staged)
-        with tarfile.open(archive) as t:
-            _safe_extract(t, staged)
-
-        root = staged
-        entries = os.listdir(staged)
-        if len(entries) == 1 and os.path.isdir(os.path.join(staged, entries[0])):
-            root = os.path.join(staged, entries[0])
-
-        if not os.path.exists(os.path.join(root, "server", "riparr", "main.py")):
-            return {"ok": False,
-                    "message": "That archive does not look like Riparr, so it was not "
-                               "installed. Nothing was changed."}
-
-        # The directory is replaced from the inside, and the virtualenv never moves.
-        #
-        # /opt is root-owned and this service runs as `riparr`, so renaming /opt/riparr
-        # raises PermissionError -- which is how appliance self-update managed never to
-        # work at all, on any release. What the service *can* do is add and remove
-        # entries inside the directory it owns, so the swap moves contents rather than
-        # the directory itself and needs no privilege it does not have.
-        #
-        # The venv used to be carried into the staging directory before that failing
-        # step, and the `finally` below deletes the staging directory -- so a failed
-        # update took the interpreter with it. The box kept serving, because the running
-        # process holds its own files open, and would not have come back from the next
-        # restart. It stays exactly where it is now, and a failed update cannot reach it.
-        keep = {VENV_DIR, PREV_DIR}
-        shutil.rmtree(backup, ignore_errors=True)
-        os.makedirs(backup)
-        for name in os.listdir(INSTALL_DIR):
-            if name in keep:
-                continue
-            shutil.move(os.path.join(INSTALL_DIR, name), os.path.join(backup, name))
-        for name in os.listdir(root):
-            if name in keep:
-                continue
-            shutil.move(os.path.join(root, name), os.path.join(INSTALL_DIR, name))
-        swapped = True
-
-        # A release may add a dependency, and the venv that just came across predates
-        # it. Failing here is recoverable and rolling back is the right answer, because
-        # the alternative is a service that starts and then dies on an import.
-        pip = os.path.join(INSTALL_DIR, ".venv", "bin", "pip")
-        reqs = os.path.join(INSTALL_DIR, "server", "requirements.txt")
-        if os.path.exists(pip) and os.path.exists(reqs):
-            # cwd is explicit rather than inherited. The chdir above prevents this
-            # process acquiring a dead cwd in the first place, but a box that already
-            # has one -- from an update installed before that fix -- would otherwise
-            # keep failing here forever with no way out through this page.
-            p = subprocess.run([pip, "install", "--quiet", "-r", reqs],
-                               capture_output=True, text=True, timeout=600,
-                               cwd=INSTALL_DIR)
-            if p.returncode != 0:
-                _rollback(backup)
-                return {"ok": False,
-                        "message": "The new version could not install what it needs, "
-                                   "so the previous one was put back.",
-                        "detail": (p.stderr or p.stdout or "")[-400:]}
-
-        # Units and root-side helper scripts live outside /opt/riparr, so the swap
-        # above did not install them -- this process cannot write /etc/systemd/system
-        # and should never be able to. Ask the root side through the same one-way door
-        # the rest of the privileged actions use.
-        #
-        # This is the step whose absence made every previous release ship its systemd
-        # changes to /opt/riparr/packaging and install none of them.
-        provisioned = P.request_provision()
-
-        # Arranged *after* the swap and reported honestly. The new code is on disk
-        # either way -- what differs is whether anything is going to start running it,
-        # and that is the difference between "updated" and "updated, nothing happened".
-        how = _arrange_restart()
-        note = ("" if provisioned else
-                " This box predates the automatic system-update step, so open "
-                "System \u2192 Tasks afterwards to finish installing it.")
-
-        if how == "restart":
-            msg = "Updated to %s. Riparr is restarting." % info["latest"]
-        elif how == "reboot":
-            msg = ("Updated to %s. The box is restarting to finish \u2014 about a "
-                   "minute." % info["latest"])
-        else:
-            msg = ("Updated to %s, but Riparr could not restart itself, so it is "
-                   "still running the previous version. Restart it from the account "
-                   "menu to finish \u2014 nothing is lost, and the new version is "
-                   "already on the box." % info["latest"])
-
-        return {"ok": True, "message": msg + note, "version": info["latest"],
-                "restarted": how, "needs_restart": how is None,
-                "provisioned": provisioned}
-    except Exception as e:
-        if swapped:
-            _rollback(backup)
-            return {"ok": False,
-                    "message": "The update failed and the previous version was put "
-                               "back.", "detail": str(e)}
-        return {"ok": False, "message": "The update failed. Nothing was changed.",
-                "detail": str(e)}
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+                    "message": st.get("message") or "The update failed. Nothing was changed.",
+                    "detail": st.get("detail") or ""}
+    return {"ok": False, "pending": True, "version": info["latest"],
+            "message": "The update is still running. This page will show its progress; "
+                       "nothing needs doing.",
+            "state": P.update_state()}
 
 
-def _rollback(backup):
-    """Put the previous contents back. Best effort, and better than leaving a hole.
-
-    Contents, not the directory: the same permission that stops the swap renaming
-    /opt/riparr stops the rollback renaming it back. The virtualenv is untouched by
-    either direction, because it never left.
-    """
-    try:
-        if not os.path.isdir(backup):
-            return
-        keep = {VENV_DIR, PREV_DIR}
-        for name in os.listdir(INSTALL_DIR):
-            if name in keep:
-                continue
-            target = os.path.join(INSTALL_DIR, name)
-            shutil.rmtree(target, ignore_errors=True)
-            if os.path.exists(target):
-                os.remove(target)
-        for name in os.listdir(backup):
-            shutil.move(os.path.join(backup, name), os.path.join(INSTALL_DIR, name))
-    except Exception:
-        pass
-
-
-def _arrange_restart():
-    """Get the new code running. Returns "restart", "reboot" or None.
-
-    None is the important return value and the reason this was rewritten.
-
-    The old version tried `systemd-run` and then a backgrounded shell, and treated a
-    zero exit status as proof. Both are refused for this account -- verified on the
-    reference box, where each answers "Access denied", because riparr.service runs as
-    an unprivileged user with NoNewPrivileges=yes. The shell nevertheless exited 0,
-    every time, because `&` backgrounds the command and the refusal went to /dev/null.
-
-    So `install()` swapped the code correctly, reported "Riparr is restarting", and
-    restarted nothing. The box kept serving the old version from a process holding its
-    own deleted files open, the page still showed the old version, and the only clue
-    was that nothing happened. Three updates in a row failed that way with three 200s
-    in the log and no restart between them.
-
-    The lesson is the one this codebase keeps relearning: a privileged action attempted
-    directly from this process cannot work, and must go through a door. Restarting is
-    now a door of its own. Rebooting is the fallback, because that door has existed
-    since early versions and is present on every box that could be running this.
-    """
-    if P.request_service_restart():
-        return "restart"
-    ok, _ = P.power_action("reboot")
-    if ok:
-        return "reboot"
-    # Running as root (a developer box, or an install that never dropped privileges) is
-    # the only case where doing it here can work. Checked last and checked honestly:
-    # no backgrounding, so the return code means something.
-    try:
-        r = subprocess.run(["systemd-run", "--collect", "--on-active=2",
-                            "--unit=riparr-update-restart",
-                            "systemctl", "restart", SERVICE],
-                           capture_output=True, timeout=10)
-        if r.returncode == 0:
-            return "restart"
-    except Exception:
-        pass
-    return None
-
-
-def _download(url, dest):
-    req = urllib.request.Request(url, headers={"User-Agent": "riparr/%s" % __version__})
-    with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
-        shutil.copyfileobj(r, f)
+def install_state():
+    """The root side's latest word on an update, for the page to show."""
+    return P.update_state()
 
 
 # Both spellings, because the answer to "which case is it?" should not be a brick.
@@ -410,16 +237,6 @@ def _sha256(path):
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
-
-
-def _safe_extract(tar, dest):
-    """Refuse path traversal. An update archive is remote input."""
-    base = os.path.realpath(dest)
-    for m in tar.getmembers():
-        target = os.path.realpath(os.path.join(dest, m.name))
-        if not target.startswith(base + os.sep) and target != base:
-            raise ValueError("archive contains an unsafe path: %s" % m.name)
-    tar.extractall(dest)
 
 
 def _component_version(assets, key, fallback):

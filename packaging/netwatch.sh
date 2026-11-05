@@ -49,8 +49,9 @@ fi
 INTERVAL="${RIPARR_NETWATCH_INTERVAL:-60}"
 
 DB="${RIPARR_DB:-/var/lib/riparr/riparr.db}"
-PY="${RIPARR_PYTHON:-/opt/riparr/.venv/bin/python}"
-[ -x "$PY" ] || PY=python3
+# The system interpreter, never the service's virtualenv: this runs as root and
+# needs only the standard library.
+PY="${RIPARR_PYTHON:-python3}"
 READER="$(dirname "$0")/netwatch-settings.py"
 
 # Consecutive failures before each rung, read from the database on every probe so a

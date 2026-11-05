@@ -20,16 +20,21 @@
 set -uo pipefail
 
 DB="${RIPARR_DB:-/var/lib/riparr/riparr.db}"
-PY="${RIPARR_PYTHON:-/opt/riparr/.venv/bin/python}"
+# The system interpreter, never the service's virtualenv: this runs as root, and root
+# must not execute anything that was ever writable by the account it is guarding
+# against. Everything below needs only the standard library.
+PY="${RIPARR_PYTHON:-python3}"
 IFACE="${RIPARR_WIFI_IFACE:-}"
 CONF_DIR=/etc/wpa_supplicant
-STATE=/run/riparr/wifi.state
-IMPORT=/run/riparr/wifi.merged.json
-
-[ -x "$PY" ] || PY=python3
+# Progress and results go to a directory that is root's, never into /run/riparr: that
+# one is the service's, and a root helper writing into it could be made to write
+# through a symlink the service planted. The service reads this; it cannot write it.
+STATUS_DIR="${RIPARR_STATUS_DIR:-/run/riparr-status}"
+STATE="$STATUS_DIR/wifi.state"
+IMPORT="$STATUS_DIR/wifi.merged.json"
 
 say() {   # phase, message, detail
-  mkdir -p /run/riparr
+  install -d -o root -g root -m 0755 "$STATUS_DIR"
   "$PY" - "$1" "$2" "${3:-}" > "$STATE" <<'PYEOF'
 import json, sys, time
 print(json.dumps({"phase": sys.argv[1], "message": sys.argv[2],

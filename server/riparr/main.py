@@ -1890,7 +1890,20 @@ def update_check(user=Depends(require_user)):
 
 @app.post("/api/update/install")
 def update_install(user=Depends(require_user)):
-    return updater.install()
+    """Ask the root side for the latest release and come straight back.
+
+    The install itself -- download, checksum, provenance, unpack, pip, swap, restart
+    -- runs as root in riparr-update.service and takes minutes on a Zero 2 W. Holding
+    an HTTP request open for that is how a proxy or a browser turns a working update
+    into "the request failed"; the page polls GET /api/update/install instead.
+    """
+    return updater.install(wait=False)
+
+
+@app.get("/api/update/install")
+def update_install_state(user=Depends(require_user)):
+    """What the root side says about the update it was asked for, or null."""
+    return {"state": updater.install_state()}
 
 
 # ─────────────────────────── config backup ───────────────────────────

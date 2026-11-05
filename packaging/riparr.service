@@ -21,7 +21,10 @@ Group=riparr
 # there, and systemd picks up the account's own groups anyway; that path costs nothing
 # when it is absent.
 SupplementaryGroups=cdrom
-WorkingDirectory=/opt/riparr/server
+# /opt/riparr/current is a root-owned symlink to the verified release in
+# /opt/riparr/releases/<version>; the service can read it and cannot write it. The
+# in-app updater asks root to move the link (see riparr-update.path).
+WorkingDirectory=/opt/riparr/current/server
 
 # The default port, overridden by whatever the preparer wrote to the boot partition.
 # Later assignments win, so the file beats this line when it exists.
@@ -35,7 +38,7 @@ Environment=HOME=/var/lib/riparr
 EnvironmentFile=-/boot/firmware/riparr.conf
 EnvironmentFile=-/boot/riparr.conf
 
-ExecStart=/opt/riparr/.venv/bin/python -m uvicorn riparr.main:app \
+ExecStart=/opt/riparr/current/.venv/bin/python -m uvicorn riparr.main:app \
           --host 0.0.0.0 --port ${RIPARR_PORT}
 
 # The cable gets pulled and discs misbehave; staying up is the whole job (D4).
