@@ -64,7 +64,9 @@ class Client:
         self.conn = http.client.HTTPConnection(self.host, self.port, timeout=30)
 
     def request(self, method, path, body=None):
-        headers = {}
+        # The header the page sends on every request: without it a POST is refused as
+        # a possible cross-site request (riparr/web.py), bench or not.
+        headers = {"X-Riparr-Request": "1"}
         if self.cookie:
             headers["Cookie"] = self.cookie
         data = None

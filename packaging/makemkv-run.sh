@@ -14,12 +14,11 @@
 # install.sh puts it in /usr/local/lib/riparr/ as root:root 0755.
 set -uo pipefail
 
-RUN=/run/riparr
-STATE="$RUN/makemkv.state"
-LOG="$RUN/makemkv.log"
+# shellcheck source=packaging/status-lib.sh
+. "$(dirname "$0")/status-lib.sh"
+STATE="$STATUS_DIR/makemkv.state"
+LOG="$STATUS_DIR/makemkv.log"
 SCRIPT=/usr/local/lib/riparr/makemkv-install.sh
-
-mkdir -p "$RUN"
 
 # The web service polls these. World-readable on purpose: they carry progress, not
 # secrets, and the reader is an unprivileged process.
@@ -98,17 +97,18 @@ if [ $rc -ne 0 ]; then
   # The build's stderr -- where compiler errors land -- goes to a separate file, so
   # the wrapper log alone can say "BUILD FAILED" and nothing about why.
   detail="$(tail -n 20 "$LOG")"
-  for t in /root/validation/makemkv-oss-build.time; do
-    [ -s "$t" ] && detail="$detail
+  t=/root/validation/makemkv-oss-build.time
+  if [ -s "$t" ]; then
+    detail="$detail
 --- build errors ---
 $(tail -n 20 "$t")"
-  done
+  fi
   say error 0 "MakeMKV didn't finish building." "$detail"
   exit $rc
 fi
 
 if command -v makemkvcon >/dev/null 2>&1 || [ -x /usr/local/bin/makemkvcon ]; then
-  say done 1 "MakeMKV is installed." ""
+  say "done" 1 "MakeMKV is installed." ""
 else
   # The script exited 0 without producing a binary. Say so rather than reporting
   # success for something that is not there.

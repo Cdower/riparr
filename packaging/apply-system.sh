@@ -5,30 +5,141 @@
 #
 # There were two ways to get a new version onto a box and only one of them applied
 # system changes. `tools/install.sh` copies the systemd units and helper scripts into
-# place; the in-app updater (updater.install) swaps /opt/riparr, pip-installs and
-# restarts the service -- it never touches /etc/systemd/system or /usr/local/lib. So a
-# release that added a unit shipped the file and installed nothing, on every box that
-# updated from the web page. The unit sat in /opt/riparr/packaging looking installed.
+# place; the in-app updater swapped /opt/riparr, pip-installed and restarted the
+# service -- it never touched /etc/systemd/system or /usr/local/lib. So a release that
+# added a unit shipped the file and installed nothing, on every box that updated from
+# the web page. The unit sat in /opt/riparr/packaging looking installed.
 #
 # That is the same shape as every bug in JOURNAL.md worth remembering: something that
 # reads as implemented and does nothing. The fix is one definition with two callers --
-# install.sh runs it, and the provisioning door (riparr-provision.path) runs it after
-# an in-app update.
+# install.sh runs it, and the update door (riparr-update.service) runs it after a
+# release has been verified and unpacked.
+#
+# What it trusts, 2026-11-05:
+#
+# Until this version /opt/riparr was owned by the service account, because the in-app
+# updater ran as that account and replaced the tree. This script then installed units
+# and root-side helpers *from that tree*, as root. A compromised service could edit
+# packaging/riparr-reboot.service, touch /run/riparr/provision.request, and have root
+# run anything. The one-way doors were sound; what they opened onto was not.
+#
+# So now: /opt/riparr is root's. Releases are unpacked by a root helper into
+# /opt/riparr/releases/<version> after their checksum and provenance are checked, and
+# `current` is a root-owned symlink. The service account can read the code it runs and
+# cannot write a byte of it. This script refuses to install anything that is not a
+# regular file owned by root with no group or other write bit, in a directory that is
+# the same -- by name, loudly, and with a non-zero exit so the unit that ran it records
+# the refusal. See docs/security.md.
 #
 # Must be idempotent: it runs on every install and after every update.
+#
+# Every absolute path has an override so packaging/apply-system.test.sh can run this
+# against a temporary directory. The defaults are what the box uses.
 
 set -euo pipefail
 
 INSTALL_DIR="${RIPARR_INSTALL_DIR:-/opt/riparr}"
-PKG="$INSTALL_DIR/packaging"
-LIB=/usr/local/lib/riparr
+LIB="${RIPARR_LIB_DIR:-/usr/local/lib/riparr}"
+SYSROOT="${RIPARR_SYSROOT:-}"
+UNITS="${RIPARR_UNIT_DIR:-$SYSROOT/etc/systemd/system}"
+RUN="${RIPARR_RUN_DIR:-/run/riparr}"
+STATUS="${RIPARR_STATUS_DIR:-/run/riparr-status}"
 
 [ "$(id -u)" = 0 ] || { echo "apply-system.sh must run as root" >&2; exit 1; }
-[ -d "$PKG" ] || { echo "No packaging directory at $PKG" >&2; exit 1; }
 
 say() { printf '  %s\n' "$*"; }
+refuse() { printf '  REFUSED %s\n' "$*" >&2; refused=1; }
+refused=0
+
+# ── the release layout ──
+# /opt/riparr/releases/<version>/   a verified release, root-owned, read-only to others
+# /opt/riparr/current               -> releases/<version>, swapped atomically
+# /opt/riparr/server, packaging, tools, .venv -> current/..., so every path that was
+#                                   ever documented or baked into a unit still works
+#
+# A box that updated from the web page before this version arrives here with the old
+# layout: a real tree owned by the service account. It is adopted once -- moved into
+# releases/<its version>, given to root, and never writable by the service again. That
+# adopts the code the box is already running, which is no more than the old door
+# already trusted; the next update through riparr-update.sh is the first one whose
+# every byte was checked before root touched it. Said out loud, because it is the one
+# moment this script makes root's something the service wrote.
+adopt_legacy_layout() {
+    [ -d "$INSTALL_DIR/server" ] && [ ! -L "$INSTALL_DIR/server" ] || return 0
+    local v
+    v=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$INSTALL_DIR/server/riparr/__init__.py" 2>/dev/null || true)
+    v="${v:-adopted}"
+    say "adopting the existing /opt/riparr tree as release $v (one-time layout change)"
+    local dest="$INSTALL_DIR/releases/$v"
+    rm -rf "$dest" "$INSTALL_DIR/.previous"
+    mkdir -p "$INSTALL_DIR/releases"
+    install -d -m 0755 "$dest"
+    local name
+    for name in "$INSTALL_DIR"/* "$INSTALL_DIR"/.[!.]*; do
+        [ -e "$name" ] || [ -L "$name" ] || continue
+        case "$(basename "$name")" in releases|current) continue ;; esac
+        mv "$name" "$dest/"
+    done
+    chown -R root:root "$INSTALL_DIR"
+    chmod -R go-w "$INSTALL_DIR"
+    chmod 0755 "$INSTALL_DIR" "$INSTALL_DIR/releases" "$dest"
+    ln -sfn "releases/$v" "$INSTALL_DIR/current"
+    local l
+    for l in server packaging tools .venv; do
+        ln -sfn "current/$l" "$INSTALL_DIR/$l"
+    done
+}
+adopt_legacy_layout
+
+# Through `current`, not the compatibility link, so this script depends on the one
+# link the layout is defined by.
+PKG="$INSTALL_DIR/current/packaging"
+TOOLS="$INSTALL_DIR/current/tools"
+[ -d "$PKG" ] || { echo "No packaging directory at $PKG" >&2; exit 1; }
+
+# Root's, and nobody else can write it: the one predicate behind every install below.
+root_unwritable() {
+    local st
+    st=$(stat -c '%u %a' "$1") || return 1
+    [ "${st% *}" = 0 ] || return 1
+    local mode="${st#* }"
+    mode="${mode: -3}"
+    [ "$(( 8#$mode & 8#022 ))" = 0 ]
+}
+# A regular file. Symlinks are refused outright: a link in a root-owned directory
+# still names whatever the service wanted it to.
+trusted_file() { [ ! -L "$1" ] && [ -f "$1" ] && root_unwritable "$1"; }
+trusted_dir() {
+    local d
+    d=$(readlink -f "$1") || return 1
+    [ -d "$d" ] && root_unwritable "$d"
+}
+# Install one file if it is trusted; refuse it by name if it is there and is not.
+# Returns 1 when the source is absent, so a caller can skip optional files.
+install_trusted() {   # src, dst, mode
+    [ -e "$1" ] || [ -L "$1" ] || return 1
+    if ! trusted_file "$1"; then
+        refuse "$1 is not a root-owned, unwritable regular file; not installed"
+        return 1
+    fi
+    install -o root -g root -m "$3" "$1" "$2"
+}
+
+# The directories everything below is read from. If the service account could write
+# either, every file in it is suspect, so nothing is installed at all.
+for d in "$INSTALL_DIR" "$PKG" "$TOOLS"; do
+    [ -e "$d" ] || continue
+    if ! trusted_dir "$d"; then
+        refuse "$d is not a root-owned directory closed to other writers; installing nothing from it"
+        exit 1
+    fi
+done
 
 install -d -m 0755 "$LIB"
+# Where root-side helpers publish progress and results back to the service. Root's,
+# never the service's: a helper writing into a directory the service owns can be made
+# to write through a symlink the service planted, into any file on the box.
+install -d -o root -g root -m 0755 "$STATUS"
 
 # ── helper scripts ──
 # Every root-side helper the one-way doors call. Listed rather than globbed so a stray
@@ -36,55 +147,37 @@ install -d -m 0755 "$LIB"
 netwatch_changed=0
 thermal_changed=0
 for s in wifi-apply.sh usbhost-fix.sh makemkv-run.sh netwatch.sh dvdtools-install.sh \
-         cdtools-install.sh thermal.sh; do
-    [ -f "$PKG/$s" ] || continue
-    if [ "$s" = netwatch.sh ] && ! cmp -s "$PKG/$s" "$LIB/$s"; then
-        netwatch_changed=1
-    fi
-    if [ "$s" = thermal.sh ] && ! cmp -s "$PKG/$s" "$LIB/$s"; then
-        thermal_changed=1
-    fi
-    install -o root -g root -m 0755 "$PKG/$s" "$LIB/$s"
+         cdtools-install.sh thermal.sh riparr-update.sh power-allowed.sh; do
+    [ -e "$PKG/$s" ] || [ -L "$PKG/$s" ] || continue
+    [ "$s" = netwatch.sh ] && ! cmp -s "$PKG/$s" "$LIB/$s" && netwatch_changed=1
+    [ "$s" = thermal.sh ] && ! cmp -s "$PKG/$s" "$LIB/$s" && thermal_changed=1
+    install_trusted "$PKG/$s" "$LIB/$s" 0755 || true
 done
 
-# netwatch.sh looks for this beside itself. Not executable -- it is run as an argument
-# to the interpreter, and a 0644 file is one fewer thing that can be invoked directly.
-if [ -f "$PKG/netwatch-settings.py" ]; then
-    install -o root -g root -m 0644 "$PKG/netwatch-settings.py" \
-            "$LIB/netwatch-settings.py"
-fi
+# Data files beside the helpers: read by root, never executed, so 0644.
+#   netwatch-settings.py   netwatch.sh runs it as an argument to the system python3
+#   powerkey.py            the power button's root half, same arrangement
+#   makemkv-manifest.json  the MakeMKV installer's one source of versions and hashes
+#   staged-install.sh      sourced by the MakeMKV and DVD-tools installers, never run
+#   status-lib.sh          sourced by every helper that reports progress
+#   safe-untar.py          run as an argument to python3 by the two that unpack archives
+for f in netwatch-settings.py powerkey.py makemkv-manifest.json staged-install.sh \
+         status-lib.sh safe-untar.py; do
+    install_trusted "$PKG/$f" "$LIB/$f" 0644 || true
+done
 
-# The power button's root half. Run as an argument to the system python3, never the
-# venv: it must keep working when /opt/riparr is half-updated or broken.
-if [ -f "$PKG/powerkey.py" ]; then
-    install -o root -g root -m 0644 "$PKG/powerkey.py" "$LIB/powerkey.py"
-fi
+# Two helpers live in tools/ rather than packaging/ but are root-side like the rest and
+# belong under /usr/local/lib for the same reason. makemkv-install.sh used to be placed
+# only by install.sh, so a web update never refreshed it; mount-library.sh used to be
+# executed straight out of /opt/riparr.
+for s in makemkv-install.sh mount-library.sh; do
+    install_trusted "$TOOLS/$s" "$LIB/$s" 0755 || true
+done
 
-# The MakeMKV installer and the manifest it reads go together, and both are root's.
-# The installer used to be placed only by install.sh, so a web update never refreshed
-# it; and it looked for the manifest at ../packaging beside itself -- which, run from
-# here, is a directory that does not exist. With no manifest it had nothing to fetch,
-# so installing MakeMKV from the web page worked only when the Preparer had already
-# put the tarballs on the card.
-#
-# Copied rather than read out of /opt/riparr at install time, like every other part
-# here: what root runs between provisions is root's own copy.
-if [ -f "$INSTALL_DIR/tools/makemkv-install.sh" ]; then
-    install -o root -g root -m 0755 "$INSTALL_DIR/tools/makemkv-install.sh" \
-            "$LIB/makemkv-install.sh"
-fi
-if [ -f "$PKG/makemkv-manifest.json" ]; then
-    install -o root -g root -m 0644 "$PKG/makemkv-manifest.json" \
-            "$LIB/makemkv-manifest.json"
-fi
-
-# mount-library.sh lives in tools/ rather than packaging/, but it is a root-side helper
-# like the rest and belongs under /usr/local/lib for the same reason: riparr-library
-# used to execute it straight out of /opt/riparr, which the riparr account owns.
-if [ -f "$INSTALL_DIR/tools/mount-library.sh" ]; then
-    install -o root -g root -m 0755 "$INSTALL_DIR/tools/mount-library.sh" \
-            "$LIB/mount-library.sh"
-fi
+# This script's own root copy, refreshed last of the helpers so a box picks up a newer
+# version on its next provision. GNU install unlinks the destination before writing,
+# so the copy that is running right now is not rewritten underneath itself.
+install_trusted "$PKG/apply-system.sh" "$LIB/apply-system.sh" 0755 || true
 
 # ── units ──
 # Same argument: an explicit list, so this cannot install something unreviewed.
@@ -93,7 +186,8 @@ fi
 # had ever installed it, so no box mounted its share at boot. /srv/library did not even
 # exist on the reference unit. That is what made a configured share read as permanently
 # lost, with no way back from the interface short of deleting it and adding it again.
-for u in riparr.service \
+install -d -m 0755 "$UNITS"
+for u in riparr.slice riparr.service \
          riparr-makemkv.service riparr-makemkv.path \
          riparr-dvdtools.service riparr-dvdtools.path \
          riparr-cdtools.service riparr-cdtools.path \
@@ -105,12 +199,19 @@ for u in riparr.service \
          riparr-powerkey.service \
          riparr-thermal.service \
          riparr-provision.service riparr-provision.path \
+         riparr-update.service riparr-update.path \
          riparr-restart.service riparr-restart.path \
          riparr-remount.service riparr-remount.path \
          riparr-library.service; do
-    [ -f "$PKG/$u" ] || continue
-    install -m 0644 "$PKG/$u" "/etc/systemd/system/$u"
+    install_trusted "$PKG/$u" "$UNITS/$u" 0644 || true
 done
+
+# The root-side status directory has to exist at every boot, not only after a
+# provision. systemd-tmpfiles recreates it from this, and creates it now.
+install -d -m 0755 "$SYSROOT/etc/tmpfiles.d"
+if install_trusted "$PKG/riparr-tmpfiles.conf" "$SYSROOT/etc/tmpfiles.d/riparr.conf" 0644; then
+    systemd-tmpfiles --create "$SYSROOT/etc/tmpfiles.d/riparr.conf" 2>/dev/null || true
+fi
 
 systemctl daemon-reload
 
@@ -120,8 +221,8 @@ systemctl daemon-reload
 # it is not already running -- restarting it during an outage would reset the
 # escalation counter and start the clock again from zero.
 for p in riparr-makemkv riparr-dvdtools riparr-cdtools riparr-poweroff riparr-reboot riparr-usbhost riparr-wifi \
-         riparr-provision riparr-remount riparr-restart; do
-    [ -f "/etc/systemd/system/$p.path" ] || continue
+         riparr-provision riparr-update riparr-remount riparr-restart; do
+    [ -f "$UNITS/$p.path" ] || continue
     systemctl enable --quiet "$p.path" 2>/dev/null || true
     systemctl start "$p.path" 2>/dev/null || true
 done
@@ -129,17 +230,17 @@ done
 # The library mount is a oneshot, not a door. Enabling it is what makes a share come
 # back on its own after a reboot; starting it now is what makes it come back today,
 # without the user having to reboot to get the fix they just installed.
-if [ -f /etc/systemd/system/riparr-library.service ]; then
+if [ -f "$UNITS/riparr-library.service" ]; then
     systemctl enable --quiet riparr-library.service 2>/dev/null || true
     systemctl start riparr-library.service 2>/dev/null || true
-    if mountpoint -q /srv/library 2>/dev/null; then
+    if mountpoint -q "$SYSROOT/srv/library" 2>/dev/null; then
         say "library share mounted at /srv/library"
     else
         say "library share not mounted yet — add or test a share in the web interface"
     fi
 fi
 
-if [ -f /etc/systemd/system/riparr-netwatch.service ]; then
+if [ -f "$UNITS/riparr-netwatch.service" ]; then
     systemctl enable --quiet riparr-netwatch.service 2>/dev/null || true
     if ! systemctl is-active --quiet riparr-netwatch.service; then
         systemctl start riparr-netwatch.service 2>/dev/null || true
@@ -158,7 +259,7 @@ fi
 
 # Restarted rather than left alone: it holds no state worth keeping, and an update to
 # powerkey.py does nothing until the process running the old one is replaced.
-if [ -f /etc/systemd/system/riparr-powerkey.service ]; then
+if [ -f "$UNITS/riparr-powerkey.service" ]; then
     systemctl enable --quiet riparr-powerkey.service 2>/dev/null || true
     systemctl restart riparr-powerkey.service 2>/dev/null || true
     say "power button handler started"
@@ -166,7 +267,7 @@ fi
 
 # The thermal guard: unlike the Wi-Fi watchdog it has no escalation to lose, so a new
 # version simply replaces the old one.
-if [ -f /etc/systemd/system/riparr-thermal.service ]; then
+if [ -f "$UNITS/riparr-thermal.service" ]; then
     systemctl enable --quiet riparr-thermal.service 2>/dev/null || true
     if [ "$thermal_changed" = 1 ] && systemctl is-active --quiet riparr-thermal.service; then
         systemctl restart riparr-thermal.service 2>/dev/null || true
@@ -183,22 +284,22 @@ fi
 # /run/riparr exists -- creating it here as root would leave the service unable to
 # write its own runtime directory. On a fresh install it does not exist yet, and the
 # service asks for itself once it is running (backup.start).
-if [ -f /etc/systemd/system/riparr-dvdtools.path ] && [ -d /run/riparr ]; then
+if [ -f "$UNITS/riparr-dvdtools.path" ] && [ -d "$RUN" ]; then
     if ! command -v dvdbackup >/dev/null 2>&1 \
        || ! ldconfig -p 2>/dev/null | grep -q 'libdvdcss\.so\.2'; then
-        touch /run/riparr/dvdtools.request
+        touch "$RUN/dvdtools.request"
         say "DVD backup tools requested (they install in the background)"
     fi
 fi
 
 # Music CDs need cd-paranoia, flac and friends (packaging/cdtools-install.sh). Asked for
 # the same way as the DVD tools and for the same reasons; only apt, so it is quick.
-if [ -f /etc/systemd/system/riparr-cdtools.path ] && [ -d /run/riparr ]; then
+if [ -f "$UNITS/riparr-cdtools.path" ] && [ -d "$RUN" ]; then
     # Every always-installed tool, not just the first two: a release that adds an
     # encoder has to reach boxes that already have the others.
     for bin in cd-paranoia cd-info flac lame opusenc oggenc bsdtar; do
         if ! command -v "$bin" >/dev/null 2>&1; then
-            touch /run/riparr/cdtools.request
+            touch "$RUN/cdtools.request"
             say "music CD tools requested (they install in the background)"
             break
         fi
@@ -212,13 +313,13 @@ fi
 # supported board has a hardware watchdog; with systemd feeding it, a frozen box reboots
 # itself within seconds and the interrupted rip carries on when the disc goes back in.
 # 15 s is the longest both the Allwinner and the Broadcom watchdogs accept.
-if [ -e /dev/watchdog ] || [ -e /dev/watchdog0 ]; then
+if [ -e "$SYSROOT/dev/watchdog" ] || [ -e "$SYSROOT/dev/watchdog0" ]; then
     want='[Manager]
 RuntimeWatchdogSec=15s
 RebootWatchdogSec=10min'
-    conf=/etc/systemd/system.conf.d/riparr-watchdog.conf
+    conf="$SYSROOT/etc/systemd/system.conf.d/riparr-watchdog.conf"
     if [ "$(cat "$conf" 2>/dev/null)" != "$want" ]; then
-        mkdir -p /etc/systemd/system.conf.d
+        mkdir -p "$SYSROOT/etc/systemd/system.conf.d"
         printf '%s\n' "$want" > "$conf"
         systemctl daemon-reexec
         say "Hardware watchdog on: a frozen box reboots itself"
@@ -242,7 +343,7 @@ ExecStartPre=/usr/sbin/rfkill unblock wifi
 ExecStartPre=/usr/sbin/rfkill block bluetooth
 ExecStart=
 ExecStart=/bin/true'
-    conf=/etc/systemd/system/aw859a-bluetooth.service.d/riparr-no-bluetooth.conf
+    conf="$UNITS/aw859a-bluetooth.service.d/riparr-no-bluetooth.conf"
     if [ "$(cat "$conf" 2>/dev/null)" != "$want" ]; then
         mkdir -p "$(dirname "$conf")"
         printf '%s\n' "$want" > "$conf"
@@ -252,4 +353,8 @@ ExecStart=/bin/true'
     fi
 fi
 
+if [ "$refused" != 0 ]; then
+    say "System units are NOT all up to date: something was refused (see above)"
+    exit 1
+fi
 say "System units are up to date"

@@ -10,6 +10,106 @@ bother updating.
 
 ## Unreleased
 
+**Root never runs code the web service could have written.** Until now the in-app
+updater replaced `/opt/riparr` itself, as the unprivileged service account, and then
+asked a root unit to install the systemd units and helper scripts from the tree it had
+just written. The one-way doors were sound; what they opened onto was not: anything that
+got control of the service could edit a unit file, touch `provision.request`, and run as
+root. Now `/opt/riparr` belongs to root. Each release is fetched, checked against its
+published checksum and its build attestation, unpacked and pip-installed (every package
+against its pinned hash) by a root-side helper into `/opt/riparr/releases/<version>`,
+and `/opt/riparr/current` is pointed at it; the service's whole say in an update is one
+release tag in one request file. `apply-system.sh` refuses to install any unit or
+helper that is not a root-owned, unwritable regular file, by name and with a non-zero
+exit. Root-side helpers publish their progress into a root-owned `/run/riparr-status`
+instead of the service's own runtime directory, so none of them can be made to write
+through a planted symlink. A box that updated from the web page before this version is
+adopted onto the new layout once, on its first provision, and says so in the log; the
+previous release is kept so `sudo riparr-update.sh --rollback` is a symlink swap.
+`server/requirements.txt` now carries hashes and is installed with `--require-hashes`.
+See `docs/security.md` for the threat model and the list of doors.
+
+**Restart, shut down and the Wi-Fi watchdog's reboot are now things a box can be told
+not to do.** `RIPARR_ALLOW_POWER=0` in `riparr.conf` (or `/etc/default/riparr`) turns
+the web page's Restart and Shut down off at the root side as well as hiding them, and
+hands the physical power button back to the system. The Wi-Fi watchdog now watches the
+interface that carries the default route instead of assuming `wlan0`, does nothing at
+all when that interface is wired (a Raspberry Pi on Ethernet used to reboot itself every
+twelve minutes because `wlan0` existed and carried nothing), and only reboots when
+`RIPARR_NETWATCH_REBOOT=1` as well as the page's "restart as a last resort" switch. The
+appliance keeps all three on; a shared host gets them off from the installer. The
+watchdog's decisions are plain functions with their own test.
+
+**Root-side helpers no longer trust what the service wrote.** The Wi-Fi helper refuses an
+SSID that is not a valid SSID (a newline inside one would have ended the `ssid=` line and
+started a directive of the attacker's choosing) and a key that is not a 64-digit PSK; the
+library mount refuses a host, share, domain, user or password that could change what the
+mount command or the credentials file means; the watchdog reads its thresholds as
+numbers instead of `eval`-ing them; and every root helper runs the system `python3`,
+never the service's virtualenv. The Wi-Fi helper also had a mismatched heredoc since the
+last edit to it, so it had not been writing any config at all -- found by the test
+written for the above.
+
+**Every release now proves where it came from, and every install path checks.** The
+release workflow signs a build attestation for the appliance archive and the Preparer
+builds (GitHub's `attest-build-provenance`, through Sigstore), and attaches the
+appliance bundle to the release. The root-side updater verifies it with `gh` or
+sigstore-python when either is on the box, otherwise binds the bundle to the exact
+archive it downloaded and records which level it reached; `RIPARR_UPDATE_REQUIRE_PROVENANCE=1`
+refuses anything short of a full verification. `server/requirements.txt` carries a hash
+for every package and every install path uses `pip install --require-hashes`. The
+README's install-by-hand instructions download the archive and its checksums, verify,
+unpack, then run the installer from inside -- never a script piped from the network.
+MakeMKV and libdvdcss are now compiled by an unprivileged `riparr-build` account into a
+staging directory, and root installs only the files it expects out of it; the MakeMKV
+manifest records where each pinned hash came from and that GuinpinSoft publishes none.
+CI runs shellcheck over every script, `pip-audit` against the lock, the root-helper
+tests as root, and `systemd-analyze security` on every shipped unit against a ceiling
+per unit; every action is pinned to a commit and Dependabot keeps the pins, the lock
+files and the actions current.
+
+**The service runs in a much smaller box.** `riparr.service` now has a read-only view
+of the whole system except its state, staging and library directories; sees no device
+except the optical drive, SCSI generic, the SPI LED and the Pi's firmware channel; cannot
+load modules, change the clock or hostname, see other users' processes, use realtime
+scheduling, namespaces or setuid; holds no capability; and is limited to the
+`@system-service` system calls and the Unix, IP and netlink socket families.
+`systemd-analyze security` scores it 1.7 (it was 8.4), and CI holds every unit to its
+recorded ceiling. `RIPARR_HOST` (default `0.0.0.0`) lets a box listen on loopback behind
+a reverse proxy or `tailscale serve`. Every Riparr unit now runs in `riparr.slice`, so one
+drop-in can throttle all rip work at once; `packaging/examples/` has that drop-in, a
+credential drop-in that keeps the default share's password out of the database
+(`LoadCredential=`), and the one-file way back out of the sandbox if a board turns up
+something it missed. The sandbox was checked by scoring, by a system-call trace of the
+service and its children through the whole test suite, and against the code's device and
+path needs -- not yet on a board with a real drive; `docs/security.md` says how to.
+
+**The installer says what kind of machine it is on, says what it changes, and can take it
+all back.** On a board (a `riparr.conf` on the boot partition, or any device-tree model)
+it is an appliance and the machine is set up around Riparr as before: the TCP fast-fail
+sysctl, avahi owning the `.local` name and advertising the service, power controls on,
+the watchdog allowed to reboot. Anywhere else it is a host: none of that is touched and
+the web page cannot power the machine. `--appliance` and `--host` override the guess;
+`--no-sysctl`, `--no-mdns`, `--no-power` and `--no-netwatch-reboot` turn one thing off
+whatever the mode, through `/etc/default/riparr`, which every unit reads after the boot
+partition's `riparr.conf`. Every change outside Riparr's own directories is printed as it
+is made and listed at the end. `tools/uninstall.sh` (or `install.sh --undo`) removes the
+units, the helpers, the sysctl, the mDNS handoff and advert, the operator file and the
+watchdog and Bluetooth drop-ins, leaves your own drop-ins, and with `--purge` also removes
+the code, the data and the two accounts. Both are idempotent and tested.
+
+**The web interface can be locked down for a network you do not fully trust.**
+`RIPARR_AUTH_TOKEN` adds an access token every request must carry as well as the login
+(the sign-in form asks for it; API clients send a bearer token), off unless set.
+State-changing requests are refused unless they come from the page itself -- an origin
+check plus a header the page sends and a form on another site cannot -- or carry the
+bearer token; every response carries a Content-Security-Policy that allows scripts and
+connections from this origin only and forbids framing, plus the usual nosniff, referrer
+and permissions headers; request bodies are capped (`RIPARR_MAX_BODY_BYTES`, 64 MiB);
+`RIPARR_COOKIE_SECURE=1` marks the cookies `Secure` behind TLS. The stock appliance
+notices none of it. `docs/hardened-deployment.md` is the recipe: loopback bind, auth on,
+`tailscale serve` or a reverse proxy in front, power controls off, watchdog reboot off.
+
 **A box can now stream a CPU profile to Grafana Cloud.** Settings → General has a new
 Performance profiling section: paste in the Profiles URL, stack ID and a token, press
 "Save and send a test profile", and the box sends which of its own functions are using

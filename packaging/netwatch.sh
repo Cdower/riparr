@@ -31,26 +31,41 @@
 # watchdog is exactly the kind of machine that would. A rip in progress defers the
 # reboot indefinitely -- the box is already unreachable, so waiting costs nothing that
 # is not already lost, while rebooting would additionally destroy 40 minutes of work.
+#
+# Which interface, and whether to run at all, 2026-11-05:
+#
+# This used to assume wlan0. On a Raspberry Pi on Ethernet that interface exists and
+# carries nothing, so every probe failed and the box rebooted itself every twelve
+# minutes, forever. Now the interface is the one carrying the default route, and the
+# watchdog only runs when that interface is wireless -- a wired link that goes quiet
+# has a cable to look at, not a firmware blob. RIPARR_NETWATCH_IFACE names an
+# interface explicitly and is watched whatever it is.
+#
+# The reboot rung is behind RIPARR_NETWATCH_REBOOT=1 as well as the web-page setting.
+# This script's own default is 0: run anywhere it was not explicitly set up for, it
+# will re-associate and reload a driver and never restart the machine. The shipped
+# appliance unit (riparr-netwatch.service) sets it to 1, because on the appliance the
+# reboot is the feature; tools/install.sh in host mode sets it back to 0 in
+# /etc/default/riparr.
+#
+# The decisions are functions (decide, should_watch, parse_settings) with no side
+# effects, so packaging/netwatch.test.sh can exercise them without root or a radio.
+# Set RIPARR_NETWATCH_LIB=1 to source this file without starting the loop.
 
 set -u
 
-IFACE="${RIPARR_NETWATCH_IFACE:-wlan0}"
+IFACE_EXPLICIT="${RIPARR_NETWATCH_IFACE:-}"
 MODULE="${RIPARR_NETWATCH_MODULE:-sprdwl_ng}"
-# Not every board is the Orange Pi. If its driver is not loaded, take whichever module
-# actually drives the interface (brcmfmac on a Raspberry Pi), so the reload rung reloads
-# something real instead of logging "not loaded" and skipping.
-if ! lsmod 2>/dev/null | grep -q "^${MODULE} "; then
-    _m=$(basename "$(readlink -f "/sys/class/net/$IFACE/device/driver/module" 2>/dev/null)" 2>/dev/null)
-    [ -n "$_m" ] && [ "$_m" != "module" ] && MODULE="$_m"
-fi
+REBOOT_ALLOWED="${RIPARR_NETWATCH_REBOOT:-0}"
 
 # Every INTERVAL seconds, one probe. 60s is a compromise: often enough that a dead
 # radio is caught in minutes rather than hours, rare enough to be invisible.
 INTERVAL="${RIPARR_NETWATCH_INTERVAL:-60}"
 
 DB="${RIPARR_DB:-/var/lib/riparr/riparr.db}"
-PY="${RIPARR_PYTHON:-/opt/riparr/.venv/bin/python}"
-[ -x "$PY" ] || PY=python3
+# The system interpreter, never the service's virtualenv: this runs as root and
+# needs only the standard library.
+PY="${RIPARR_PYTHON:-python3}"
 READER="$(dirname "$0")/netwatch-settings.py"
 
 # Consecutive failures before each rung, read from the database on every probe so a
@@ -70,16 +85,85 @@ FAIL_ASSOC="${RIPARR_NETWATCH_FAIL_ASSOC:-3}"
 FAIL_RELOAD="${RIPARR_NETWATCH_FAIL_RELOAD:-6}"
 FAIL_REBOOT="${RIPARR_NETWATCH_FAIL_REBOOT:-12}"
 
+# The reader prints KEY=number lines from values a web form put in the database. They
+# are read as exactly that -- a known name, a run of digits -- and nothing else is
+# accepted. This used to be `eval`, which is the wrong tool for anything that passed
+# through a file the service account can write, however the values were produced.
+parse_settings() {   # stdin: KEY=value lines; sets ENABLED/FAIL_* for the ones that fit
+    local line key val
+    while IFS= read -r line; do
+        case "$line" in
+            ENABLED=*|FAIL_ASSOC=*|FAIL_RELOAD=*|FAIL_REBOOT=*) ;;
+            *) continue ;;
+        esac
+        key="${line%%=*}"; val="${line#*=}"
+        case "$val" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        printf -v "$key" '%s' "$val"
+    done
+    return 0
+}
+
 load_settings() {
     [ -f "$READER" ] || return 0
     local out
     out="$("$PY" "$READER" "$DB" 2>/dev/null)" || return 0
-    [ -n "$out" ] && eval "$out"
+    [ -n "$out" ] && parse_settings <<< "$out"
     return 0
 }
 
 log() { logger -t riparr-netwatch -p daemon.notice -- "$@"; echo "riparr-netwatch: $*"; }
 warn() { logger -t riparr-netwatch -p daemon.warning -- "$@"; echo "riparr-netwatch: $*" >&2; }
+
+# ── the decisions ──
+
+# The interface carrying the default route, or nothing if there is none yet.
+default_iface() {
+    ip route show default 2>/dev/null |
+        awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }'
+}
+
+is_wireless() { [ -d "/sys/class/net/$1/wireless" ]; }
+
+# Whether to watch, and what. Prints one of:
+#   watch:<iface>   watch this interface
+#   wait            no default route yet; ask again later
+#   skip:<reason>   not a job for this box; exit quietly
+# Arguments: the explicit interface (may be empty), the default-route interface (may
+# be empty), and whether that one is wireless (1/0).
+should_watch() {   # explicit, route_iface, route_is_wireless
+    local explicit="$1" route="$2" wireless="$3"
+    if [ -n "$explicit" ]; then echo "watch:$explicit"; return; fi
+    if [ -z "$route" ]; then echo "wait"; return; fi
+    if [ "$wireless" = 1 ]; then echo "watch:$route"; return; fi
+    echo "skip:$route carries the default route and is not wireless"
+}
+
+# What to do after `fails` consecutive failed probes. Prints one of:
+#   wait          not yet
+#   reassociate   rung 1 (once per outage)
+#   reload        rung 2 (once per outage)
+#   defer         would reboot, but a rip is in progress
+#   reboot        rung 3
+# Rungs are guarded by did_* rather than by equality on the counter, so a rung fires
+# once per outage instead of once per matching count -- and a longer outage does not
+# re-run the cheap fix forever. The reboot needs both the threshold (which the web
+# page's "restart as a last resort" switch pushes out of reach when off) and the
+# environment's permission.
+decide() {   # fails did_assoc did_reload ripping fail_assoc fail_reload fail_reboot reboot_allowed
+    local fails="$1" did_assoc="$2" did_reload="$3" ripping="$4"
+    local fail_assoc="$5" fail_reload="$6" fail_reboot="$7" allowed="$8"
+    if [ "$fails" -ge "$fail_reboot" ] && [ "$allowed" = 1 ]; then
+        if [ "$ripping" = 1 ]; then echo defer; else echo reboot; fi
+        return
+    fi
+    if [ "$fails" -ge "$fail_reload" ] && [ "$did_reload" = 0 ]; then echo reload; return; fi
+    if [ "$fails" -ge "$fail_assoc" ] && [ "$did_assoc" = 0 ]; then echo reassociate; return; fi
+    echo wait
+}
+
+# ── the actions ──
 
 # The gateway is looked up every probe rather than cached at start. A box that is
 # carried between networks -- which is the whole point of the saved-network list --
@@ -182,11 +266,43 @@ reclaim_name() {
     fi
 }
 
+# Pick the interface, waiting for a default route to appear after boot. A box with
+# no route for a long time is a box with no network to watch yet, not a fault.
+choose_iface() {
+    local said=0 route wireless verdict
+    while :; do
+        route=$(default_iface)
+        wireless=0
+        [ -n "$route" ] && is_wireless "$route" && wireless=1
+        verdict=$(should_watch "$IFACE_EXPLICIT" "$route" "$wireless")
+        case "$verdict" in
+            watch:*) IFACE="${verdict#watch:}"; return 0 ;;
+            skip:*)
+                log "Not watching: ${verdict#skip:}. Set RIPARR_NETWATCH_IFACE to watch an interface anyway."
+                return 1 ;;
+            wait)
+                if [ "$said" = 0 ]; then log "No default route yet; waiting for one."; said=1; fi
+                sleep "$INTERVAL" ;;
+        esac
+    done
+}
+
 main() {
-    local fails=0 did_assoc=0 did_reload=0 deferred=0
+    local fails=0 did_assoc=0 did_reload=0 deferred=0 reclaimed=0 action
+
+    choose_iface || exit 0
+
+    # Not every board is the Orange Pi. If its driver is not loaded, take whichever
+    # module actually drives the interface (brcmfmac on a Raspberry Pi), so the reload
+    # rung reloads something real instead of logging "not loaded" and skipping.
+    if ! lsmod 2>/dev/null | grep -q "^${MODULE} "; then
+        local _m
+        _m=$(basename "$(readlink -f "/sys/class/net/$IFACE/device/driver/module" 2>/dev/null)" 2>/dev/null)
+        [ -n "$_m" ] && [ "$_m" != "module" ] && MODULE="$_m"
+    fi
 
     load_settings
-    log "Watching $IFACE. Probe every ${INTERVAL}s; re-associate after $FAIL_ASSOC, reload after $FAIL_RELOAD, reboot after $FAIL_REBOOT."
+    log "Watching $IFACE. Probe every ${INTERVAL}s; re-associate after $FAIL_ASSOC, reload after $FAIL_RELOAD, reboot after $FAIL_REBOOT (reboot $([ "$REBOOT_ALLOWED" = 1 ] && echo allowed || echo not allowed by RIPARR_NETWATCH_REBOOT))."
 
     while :; do
         sleep "$INTERVAL"
@@ -207,46 +323,49 @@ main() {
             if [ "$fails" -gt 0 ]; then
                 log "$IFACE answered again after $fails failed probe(s)."
             fi
+            # The name is taken back once the network is first seen working after a
+            # start (a box that renamed itself coming up after a crash) and once per
+            # recovery -- not on every probe, which was an avahi-resolve fork a minute
+            # for the life of the box and a ten-second stall each when avahi was slow.
+            if [ "$fails" -gt 0 ] || [ "$reclaimed" = 0 ]; then
+                reclaim_name
+                reclaimed=1
+            fi
             fails=0; did_assoc=0; did_reload=0; deferred=0
-            reclaim_name
             continue
         fi
 
         fails=$((fails + 1))
         warn "No answer from the gateway on $IFACE ($fails consecutive)."
 
-        # Rungs are guarded by did_* rather than by equality on the counter, so a rung
-        # fires once per outage instead of once per matching count -- and a longer
-        # outage does not re-run the cheap fix forever.
-        if [ "$fails" -ge "$FAIL_REBOOT" ]; then
-            if ripping; then
+        local rip=0
+        ripping && rip=1
+        action=$(decide "$fails" "$did_assoc" "$did_reload" "$rip" \
+                        "$FAIL_ASSOC" "$FAIL_RELOAD" "$FAIL_REBOOT" "$REBOOT_ALLOWED")
+        case "$action" in
+            defer)
                 # Logged once, not every minute: the outage is already the headline
                 # and a repeated line would bury it.
                 if [ "$deferred" -eq 0 ]; then
                     deferred=1
                     warn "Would reboot, but a rip is in progress. Holding until it finishes — the disc is worth more than the downtime."
-                fi
-                continue
-            fi
-            warn "Still dead after $fails probes and both recovery attempts. Rebooting."
-            systemctl reboot
-            # If the reboot is refused, do not spin on it every minute.
-            sleep 300
-            continue
-        fi
-
-        if [ "$fails" -ge "$FAIL_RELOAD" ] && [ "$did_reload" -eq 0 ]; then
-            did_reload=1
-            reload_driver
-            continue
-        fi
-
-        if [ "$fails" -ge "$FAIL_ASSOC" ] && [ "$did_assoc" -eq 0 ]; then
-            did_assoc=1
-            reassociate
-            continue
-        fi
+                fi ;;
+            reboot)
+                warn "Still dead after $fails probes and both recovery attempts. Rebooting."
+                systemctl reboot
+                # If the reboot is refused, do not spin on it every minute.
+                sleep 300 ;;
+            reload)
+                did_reload=1
+                reload_driver ;;
+            reassociate)
+                did_assoc=1
+                reassociate ;;
+            wait) ;;
+        esac
     done
 }
 
-main "$@"
+if [ "${RIPARR_NETWATCH_LIB:-0}" != 1 ]; then
+    main "$@"
+fi

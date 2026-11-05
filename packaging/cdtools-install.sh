@@ -26,10 +26,10 @@
 set -uo pipefail
 
 RUN=/run/riparr
-STATE="$RUN/cdtools.state"
-LOG="$RUN/cdtools.log"
-
-mkdir -p "$RUN"
+# shellcheck source=packaging/status-lib.sh
+. "$(dirname "$0")/status-lib.sh"
+STATE="$STATUS_DIR/cdtools.state"
+LOG="$STATUS_DIR/cdtools.log"
 
 say() {   # phase, progress (0..1), message, [detail]
   printf '{"phase":"%s","progress":%s,"message":%s,"detail":%s}\n' \
@@ -78,7 +78,7 @@ if [ -e "$WANT_FFMPEG" ]; then
 fi
 
 if [ ${#need[@]} -eq 0 ]; then
-  say done 1 "Music CDs are ready." ""
+  say "done" 1 "Music CDs are ready." ""
   exit 0
 fi
 
@@ -114,7 +114,7 @@ for bin in cd-info lame opusenc oggenc bsdtar; do
   command -v "$bin" >/dev/null 2>&1 || optional+=("$bin")
 done
 if [ ${#optional[@]} -gt 0 ]; then
-  say done 1 "Music CDs are ready." "Not installed: ${optional[*]}"
+  say "done" 1 "Music CDs are ready." "Not installed: ${optional[*]}"
 else
-  say done 1 "Music CDs are ready." ""
+  say "done" 1 "Music CDs are ready." ""
 fi

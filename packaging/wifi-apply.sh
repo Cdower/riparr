@@ -20,16 +20,18 @@
 set -uo pipefail
 
 DB="${RIPARR_DB:-/var/lib/riparr/riparr.db}"
-PY="${RIPARR_PYTHON:-/opt/riparr/.venv/bin/python}"
+# The system interpreter, never the service's virtualenv: this runs as root, and root
+# must not execute anything that was ever writable by the account it is guarding
+# against. Everything below needs only the standard library.
+PY="${RIPARR_PYTHON:-python3}"
 IFACE="${RIPARR_WIFI_IFACE:-}"
-CONF_DIR=/etc/wpa_supplicant
-STATE=/run/riparr/wifi.state
-IMPORT=/run/riparr/wifi.merged.json
-
-[ -x "$PY" ] || PY=python3
+CONF_DIR="${RIPARR_WPA_DIR:-/etc/wpa_supplicant}"
+# shellcheck source=packaging/status-lib.sh
+. "$(dirname "$0")/status-lib.sh"
+STATE="$STATUS_DIR/wifi.state"
+IMPORT="$STATUS_DIR/wifi.merged.json"
 
 say() {   # phase, message, detail
-  mkdir -p /run/riparr
   "$PY" - "$1" "$2" "${3:-}" > "$STATE" <<'PYEOF'
 import json, sys, time
 print(json.dumps({"phase": sys.argv[1], "message": sys.argv[2],
@@ -76,7 +78,7 @@ NEW=$(mktemp "$CONF_DIR/.riparr-wpa.XXXXXX") || fail "Could not write to $CONF_D
 chmod 0600 "$NEW"
 trap 'rm -f "$NEW"' EXIT
 
-"$PY" - "$DB" "$COUNTRY" "$CONF" "$IMPORT" > "$NEW" <<'@I@'
+"$PY" - "$DB" "$COUNTRY" "$CONF" "$IMPORT" > "$NEW" <<'PYEOF'
 import json, os, re, sqlite3, sys
 
 db, country, conf, importfile = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
@@ -160,15 +162,42 @@ out = ["ctrl_interface=DIR=/run/wpa_supplicant GROUP=netdev",
 # Higher priority wins, and the list arrives in the order the user put it in, so the
 # first entry gets the largest number. Spaced by ten so a later "nudge this one up" has
 # somewhere to go without renumbering everything.
+# What an entry may say before it is written into a file wpa_supplicant parses as
+# root. The list comes from the service's database, which the service account writes.
+# An SSID is at most 32 bytes and never holds a control character (a newline inside
+# the quotes would end the ssid= line and start another directive); a PSK is exactly
+# 64 hex digits, because that is the only form this file ever writes. Anything else
+# is skipped and named on stderr, never repaired.
+import unicodedata
+
+
+def ssid_ok(s):
+    if not s or len(s.encode("utf-8")) > 32:
+        return False
+    return not any(unicodedata.category(ch)[0] == "C" for ch in s)
+
+
+PSK_OK = re.compile(r"^[0-9a-fA-F]{64}$")
+
 seen = set()
 rank = 10 * len(nets)
 for n in nets:
-    ssid = (n.get("ssid") or "").strip()
+    if not isinstance(n, dict):
+        continue
+    ssid = n.get("ssid")
+    ssid = ssid.strip() if isinstance(ssid, str) else ""
     if not ssid or ssid in seen:
+        continue
+    if not ssid_ok(ssid):
+        print("riparr-wifi: skipping a network whose name is not a valid SSID: %r" % ssid[:40],
+              file=sys.stderr)
+        continue
+    psk = (n.get("psk") or "").strip() if isinstance(n.get("psk"), str) else ""
+    if psk and not PSK_OK.match(psk):
+        print("riparr-wifi: skipping %r: its key is not a 64-digit PSK" % ssid, file=sys.stderr)
         continue
     seen.add(ssid)
     body = ['\tssid="%s"' % ssid.replace("\\", "\\\\").replace('"', '\\"')]
-    psk = (n.get("psk") or "").strip()
     if psk:
         # Unquoted: a bare 64-hex value is the PSK itself, so no passphrase is ever
         # written to disk.
@@ -222,7 +251,7 @@ for _ in $(seq 1 20); do
 done
 
 if [ -n "$JOINED" ]; then
-  say done "Connected to $JOINED" ""
+  say "done" "Connected to $JOINED" ""
 else
   cp -a "$BACKUP" "$CONF" 2>/dev/null || true
   wpa_cli -i "$IFACE" reconfigure >/dev/null 2>&1 || \

@@ -1,0 +1,19 @@
+[Unit]
+Description=Watch for a Riparr request to install a release
+Documentation=https://github.com/jackharvest/riparr
+
+[Path]
+# The in-app updater runs as the riparr user and must keep running as the riparr
+# user. It used to replace /opt/riparr itself and then ask, through
+# riparr-provision.path, for root to install units from the tree it had just written
+# -- which let a compromised service hand root anything it liked. Now the service's
+# whole say is this file, and the file's whole content is a release tag. The root
+# side (riparr-update.sh) fetches that release itself, checks its checksum and
+# provenance, unpacks it into a root-owned directory and only then installs from it.
+#
+# The tag is the one thing read out of the file, and it is matched against a strict
+# version pattern before it is used anywhere.
+PathExists=/run/riparr/update.request
+
+[Install]
+WantedBy=multi-user.target

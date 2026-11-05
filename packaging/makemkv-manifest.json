@@ -20,7 +20,18 @@
     "  - the Internet Archive's 2026-09-22 capture of the same /download/ URLs",
     "    decompresses to exactly these bytes.",
     "Three sources, one pair of hashes. The licence and EULA differ from 1.18.4 only in",
-    "the copyright year, and the item attribute IDs Riparr reads are unchanged."
+    "the copyright year, and the item attribute IDs Riparr reads are unchanged.",
+    "",
+    "HASH PROVENANCE. GuinpinSoft publishes no checksums for its tarballs -- neither the",
+    "forum post that announces a version nor the download page carries one -- so there is",
+    "nothing official to compare against at install time, and `published_hashes` below is",
+    "null to say so rather than left out. Each package's `hash_source` records how its",
+    "sha256 was established instead: fetched from makemkv.com and matched byte-for-byte",
+    "against two independent copies (Launchpad's PPA orig tarball and the Internet",
+    "Archive's capture). tools/makemkv-watch.py repeats that cross-check for every new",
+    "version before it changes this file. If GuinpinSoft ever publishes checksums, put the",
+    "URL in `published_hashes` and teach tools/makemkv-install.sh to fetch and compare it;",
+    "until then there is deliberately no code path that pretends to."
   ],
   "version": "2.0.0",
   "verified_against_official": true,
@@ -32,30 +43,49 @@
       "sha256": "435316b2d219eb48c880526557addd076b5f5e6de5171424c7651f9cac95b161",
       "bytes": 6639445,
       "urls": [
-        {"where": "makemkv.com",
-         "url": "https://www.makemkv.com/download/makemkv-oss-2.0.0.tar.gz"},
-        {"where": "Launchpad PPA",
-         "url": "https://ppa.launchpadcontent.net/heyarje/makemkv-beta/ubuntu/pool/main/m/makemkv-oss/makemkv-oss_2.0.0.orig.tar.gz"},
-        {"where": "Launchpad (files)",
-         "url": "https://launchpad.net/~heyarje/+archive/ubuntu/makemkv-beta/+files/makemkv-oss_2.0.0.orig.tar.gz"},
-        {"where": "Internet Archive",
-         "url": "https://web.archive.org/web/20260922093631id_/https://www.makemkv.com/download/makemkv-oss-2.0.0.tar.gz"}
-      ]
+        {
+          "where": "makemkv.com",
+          "url": "https://www.makemkv.com/download/makemkv-oss-2.0.0.tar.gz"
+        },
+        {
+          "where": "Launchpad PPA",
+          "url": "https://ppa.launchpadcontent.net/heyarje/makemkv-beta/ubuntu/pool/main/m/makemkv-oss/makemkv-oss_2.0.0.orig.tar.gz"
+        },
+        {
+          "where": "Launchpad (files)",
+          "url": "https://launchpad.net/~heyarje/+archive/ubuntu/makemkv-beta/+files/makemkv-oss_2.0.0.orig.tar.gz"
+        },
+        {
+          "where": "Internet Archive",
+          "url": "https://web.archive.org/web/20260922093631id_/https://www.makemkv.com/download/makemkv-oss-2.0.0.tar.gz"
+        }
+      ],
+      "hash_source": "sha256 of the file served by makemkv.com on 2026-10-01; identical bytes from Launchpad ~heyarje/makemkv-beta (orig.tar.gz) and the Internet Archive's 2026-09-22 capture of the same URL"
     },
     {
       "name": "makemkv-bin-2.0.0.tar.gz",
       "sha256": "f1265e74875a186efdfbbbec7459a64e969033515e53cbc4d805f0a374f0a124",
       "bytes": 18926130,
       "urls": [
-        {"where": "makemkv.com",
-         "url": "https://www.makemkv.com/download/makemkv-bin-2.0.0.tar.gz"},
-        {"where": "Launchpad PPA",
-         "url": "https://ppa.launchpadcontent.net/heyarje/makemkv-beta/ubuntu/pool/main/m/makemkv-bin/makemkv-bin_2.0.0.orig.tar.gz"},
-        {"where": "Launchpad (files)",
-         "url": "https://launchpad.net/~heyarje/+archive/ubuntu/makemkv-beta/+files/makemkv-bin_2.0.0.orig.tar.gz"},
-        {"where": "Internet Archive",
-         "url": "https://web.archive.org/web/20260922093530id_/https://www.makemkv.com/download/makemkv-bin-2.0.0.tar.gz"}
-      ]
+        {
+          "where": "makemkv.com",
+          "url": "https://www.makemkv.com/download/makemkv-bin-2.0.0.tar.gz"
+        },
+        {
+          "where": "Launchpad PPA",
+          "url": "https://ppa.launchpadcontent.net/heyarje/makemkv-beta/ubuntu/pool/main/m/makemkv-bin/makemkv-bin_2.0.0.orig.tar.gz"
+        },
+        {
+          "where": "Launchpad (files)",
+          "url": "https://launchpad.net/~heyarje/+archive/ubuntu/makemkv-beta/+files/makemkv-bin_2.0.0.orig.tar.gz"
+        },
+        {
+          "where": "Internet Archive",
+          "url": "https://web.archive.org/web/20260922093530id_/https://www.makemkv.com/download/makemkv-bin-2.0.0.tar.gz"
+        }
+      ],
+      "hash_source": "sha256 of the file served by makemkv.com on 2026-10-01; identical bytes from Launchpad ~heyarje/makemkv-beta (orig.tar.gz) and the Internet Archive's 2026-09-22 capture of the same URL"
     }
-  ]
+  ],
+  "published_hashes": null
 }

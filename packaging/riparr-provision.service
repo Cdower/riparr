@@ -3,15 +3,15 @@ Description=Apply Riparr system changes after an in-app update
 Documentation=https://github.com/jackharvest/riparr
 
 [Service]
+Slice=riparr.slice
 Type=oneshot
 ExecStartPre=/bin/rm -f /run/riparr/provision.request
-# Refresh the script before running it. Nothing else ever did: apply-system.sh installs
-# every other system part but not itself, so it stayed at whatever version first set
-# the box up, and anything a later release added to it never ran. This unit is one of
-# the parts it does install, so a box picks this line up on its first provision after
-# an update and is current from the next one. The "-" keeps a checkout without
-# /opt/riparr from failing the unit.
-ExecStartPre=-/usr/bin/install -o root -g root -m 0755 /opt/riparr/packaging/apply-system.sh /usr/local/lib/riparr/apply-system.sh
+# Root's own copy, and only that. This unit used to refresh it first from
+# /opt/riparr/packaging -- which the service account owned, so the service could
+# rewrite the script root was about to run. The tree is root's now and the update
+# helper (riparr-update.sh) refreshes this copy from each verified release; the copy
+# also refreshes itself from the verified tree as its last step, so a box is current
+# from the provision after an update.
 ExecStart=/usr/local/lib/riparr/apply-system.sh
 TimeoutStartSec=120
 

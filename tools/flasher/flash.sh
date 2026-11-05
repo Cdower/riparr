@@ -30,7 +30,7 @@ xz -dc "$IMG" | sudo dd of="/dev/r$DISK" bs=4m
 sync
 
 echo "==> Waiting for boot partition to mount"
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   BOOT=$(mount | awk '/msdos/ && /Volumes/ {print $3; exit}')
   [ -n "${BOOT:-}" ] && break
   sleep 2

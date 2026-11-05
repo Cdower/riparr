@@ -30,8 +30,9 @@ COOL="${RIPARR_THERMAL_COOL:-75000}"
 RIP_FREQ="${RIPARR_THERMAL_RIP_FREQ:-1008000}"
 INTERVAL="${RIPARR_THERMAL_INTERVAL:-5}"
 DB="${RIPARR_DB:-/var/lib/riparr/riparr.db}"
-PY="${RIPARR_PYTHON:-/opt/riparr/.venv/bin/python}"
-[ -x "$PY" ] || PY=python3
+# The system interpreter, never the service's virtualenv: this runs as root and
+# needs only the standard library.
+PY="${RIPARR_PYTHON:-python3}"
 # RIPARR_THERMAL_ROOT points the whole thing at a fake /sys, for packaging/thermal.test.py.
 ROOT="${RIPARR_THERMAL_ROOT:-}"
 STATUS="${RIPARR_THERMAL_STATUS:-/run/riparr-thermal.json}"

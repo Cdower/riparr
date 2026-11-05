@@ -40,6 +40,11 @@ cat > "$BIN/mount" <<EOF
 # mount -t cifs //host/share target -o opts
 printf '%s\t%s\n' "\$4" "\$3" >> "$STATE"
 echo "mount \$4" >> "$CALLS"
+# Keep a copy of the credentials file the real mount would read: it is deleted the
+# moment the mount returns, and what went into it is the point of one test below.
+for o in \$(echo "\$6" | tr ',' ' '); do
+  case "\$o" in credentials=*) cp "\${o#credentials=}" "$T/last-cred" ;; esac
+done
 EOF
 cat > "$BIN/umount" <<EOF
 #!/bin/sh
@@ -77,7 +82,7 @@ echo "the default share mounts at the library path"
 run
 check "only the default, at the library path" "$(mounted)" "/srv/library //nas-a/Media;"
 run
-check "the password file does not outlive the mount" "$(ls "$T" | grep -c '^riparr-cred\.')" "0"
+check "the password file does not outlive the mount" "$(find "$T" -maxdepth 1 -name 'riparr-cred.*' | wc -l)" "0"
 run
 check "a second run leaves it alone" "$(mounted)" "/srv/library //nas-a/Media;"
 check "a second run neither unmounts nor mounts" "$(calls)" ""
@@ -122,6 +127,31 @@ echo "a mount that was there before the database changed is replaced, not kept"
 : > "$STATE"; printf '%s\t%s\n' "$MOUNT" "//stale/Old" >> "$STATE"
 run
 check "the stale mount is gone" "$(mounted)" "/srv/library //nas-a/Media;"
+
+echo "a row that could change what the mount command means is skipped, not cleaned up"
+# The rows are the service's to write and this script runs as root. A host with a
+# comma would become a mount option; a password with a newline would add a line to
+# the credentials file. Each is refused by name and the good share still mounts.
+: > "$STATE"; run; BEFORE=$(mounted)
+read -r H1 H2 H3 < <(dbpy "print(db.add_share('H1', 'nas-c,uid=0', 'Media', None, None), db.add_share('H2', 'nas-d', 'Media', 'u', 'pw\\nextra=line'), db.add_share('H3', 'nas-e', 'Med,ia', None, None))")
+dbpy "db.set('movie_share_id', $H1); db.set('tv_share_id', $H2); db.set('music_share_id', $H3)"
+run
+check "the hostile rows are not mounted, the default still is" "$(mounted)" "$BEFORE"
+check "each refusal is named" "$(bash "$REPO/tools/mount-library.sh" 2>&1 >/dev/null | grep -c 'skipped')" "3"
+dbpy "db.set('movie_share_id', None); db.set('tv_share_id', None); db.set('music_share_id', None); [db.delete_share(i) for i in ($H1, $H2, $H3)]"
+run
+check "and nothing else was affected" "$(mounted)" "$BEFORE"
+
+echo "a credential handed to the unit replaces the database's password for the default"
+: > "$STATE"; rm -f "$T/last-cred"
+run
+check "without one, the database's user is used" "$(grep -c '^username=$' "$T/last-cred")" "1"
+mkdir -p "$T/creds"; printf 'username=vault\npassword=from-the-credential\n' > "$T/creds/library.cred"
+: > "$STATE"; rm -f "$T/last-cred"
+CREDENTIALS_DIRECTORY="$T/creds" run
+check "with one, the credential's user and password are used" "$(tr '\n' ';' < "$T/last-cred")" "username=vault;password=from-the-credential;"
+check "the credentials file is still 0600 and gone afterwards" "$(find "$T" -maxdepth 1 -name 'riparr-cred.*' | wc -l)" "0"
+rm -rf "$T/creds"
 
 echo "a wrong share that will not unmount is not mounted over"
 : > "$STATE"; printf '%s\t%s\n' "$MOUNT" "//stale/Old" >> "$STATE"

@@ -377,11 +377,7 @@ def install_status():
 
 
 def _read_bridge_state():
-    try:
-        with open(BRIDGE_STATE) as f:
-            st = json.load(f)
-    except (OSError, ValueError):
-        return None
+    st = P.read_status(BRIDGE_STATE)
     if not isinstance(st, dict) or "phase" not in st:
         return None
     st.setdefault("progress", 0.0)
@@ -389,12 +385,8 @@ def _read_bridge_state():
     st.setdefault("detail", "")
     # A build takes half an hour; showing the last few lines is the difference between
     # "it is working" and "it is hung".
-    try:
-        with open(BRIDGE_LOG) as f:
-            tail = f.read()[-4000:]
-        st["log"] = tail.strip().splitlines()[-12:]
-    except OSError:
-        st["log"] = []
+    tail = P.read_status(BRIDGE_LOG, as_json=False) or ""
+    st["log"] = tail[-4000:].strip().splitlines()[-12:]
     return st
 
 
@@ -407,8 +399,9 @@ def _read_bridge_state():
 # can ask. It cannot say what runs.
 RUNDIR = "/run/riparr"
 REQUEST = os.path.join(RUNDIR, "makemkv.request")
-BRIDGE_STATE = os.path.join(RUNDIR, "makemkv.state")
-BRIDGE_LOG = os.path.join(RUNDIR, "makemkv.log")
+# Written by the root side into its own status directory; see platform.read_status.
+BRIDGE_STATE = "makemkv.state"
+BRIDGE_LOG = "makemkv.log"
 BRIDGE_UNIT = "/etc/systemd/system/riparr-makemkv.path"
 
 

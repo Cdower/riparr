@@ -3,6 +3,7 @@ Description=Restart Riparr on request
 Documentation=https://github.com/jackharvest/riparr
 
 [Service]
+Slice=riparr.slice
 Type=oneshot
 ExecStartPre=/bin/rm -f /run/riparr/restart.request
 # A moment's grace so the HTTP response that asked for this is finished and sent. The

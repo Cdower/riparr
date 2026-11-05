@@ -3,6 +3,7 @@ Description=Remount Riparr's library shares on request
 Documentation=https://github.com/jackharvest/riparr
 
 [Service]
+Slice=riparr.slice
 Type=oneshot
 ExecStartPre=/bin/rm -f /run/riparr/remount.request
 # A share that went away leaves a mount point behind that is no longer the share, and

@@ -3,11 +3,17 @@
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 
+// Every request the page makes carries this header. The service refuses a
+// state-changing request without it (or a bearer token), which is what stops a form
+// or an image tag on some other site from reaching the API with this browser's
+// cookie -- a page cannot add a custom header to those. See riparr/web.py.
+const REQUEST_HEADERS = { "X-Riparr-Request": "1" };
+
 const api = {
   async call(method, path, body) {
     const r = await fetch(path, {
       method,
-      headers: body ? { "Content-Type": "application/json" } : {},
+      headers: body ? { ...REQUEST_HEADERS, "Content-Type": "application/json" } : REQUEST_HEADERS,
       body: body ? JSON.stringify(body) : undefined,
     });
     if (r.status === 401) { showGate(); throw new Error("Not signed in"); }
@@ -201,10 +207,18 @@ $("#login-form").onsubmit = async (e) => {
   try {
     await api.post("/api/auth/login", {
       username: $("#gate-user").value, password: $("#gate-pass").value,
+      token: $("#gate-token")?.value || "",
     });
     await boot();
   } catch (err) { $("#gate-err").textContent = err.message; }
 };
+
+/* A box with RIPARR_AUTH_TOKEN set asks for it on the sign-in form and on the
+   first-run account step. Nothing else about the page changes. */
+function showTokenField(on) {
+  const f = $("#gate-token-field");
+  if (f) f.hidden = !on;
+}
 
 /* ════════════════════ first run ════════════════════ */
 const wizard = {
@@ -257,6 +271,8 @@ const wizard = {
         <label class="f"><span>Password</span><input id="w-pass" type="password">
           <span class="help">At least 8 characters.</span></label>
         <label class="f"><span>Confirm password</span><input id="w-pass2" type="password"></label>
+        ${state.gate ? `<label class="f"><span>Access token</span><input id="w-token" type="password" autocomplete="off">
+          <span class="help">This box was set up with an access token (RIPARR_AUTH_TOKEN). Whoever set it up has it.</span></label>` : ""}
         <div class="result bad hidden" id="w-err"></div>
       </div></div>
       <div class="wz-actions">
@@ -271,7 +287,8 @@ const wizard = {
       if (p.length < 8) return fail("Use at least 8 characters.");
       if (p !== p2) return fail("The two passwords don't match.");
       try {
-        await api.post("/api/setup/user", { username: u, password: p });
+        await api.post("/api/setup/user", { username: u, password: p,
+                                            token: $("#w-token")?.value || "" });
         this.next();
       } catch (e) { fail(e.message); }
     };
@@ -4036,7 +4053,7 @@ function wireContent(section, sub) {
       fd.append("file", f);
       try {
         // FormData, so no JSON Content-Type -- the browser has to set the boundary.
-        const r = await fetch("/api/system/backups/upload", { method: "POST", body: fd });
+        const r = await fetch("/api/system/backups/upload", { method: "POST", body: fd, headers: REQUEST_HEADERS });
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || "Restore failed");
         toast(restoreSummary(d), "ok");
@@ -4653,63 +4670,64 @@ function wireContent(section, sub) {
   const inst = $("#upd-install");
   if (inst) inst.onclick = async () => {
     inst.disabled = true;
+    const out = $("#upd-result");
+    const show = (cls, msg, detail) => {
+      if (!out) return;
+      out.hidden = false;
+      out.className = `alert ${cls}`;
+      out.innerHTML = `<b>${esc(msg || "")}</b>${
+        detail ? `<div class="why" style="margin-top:6px;user-select:text">${esc(detail)}</div>` : ""}`;
+    };
     let r;
     try { r = await api.post("/api/update/install"); }
     catch (e) { r = { ok: false, message: e.message || "The update failed." }; }
-    // Three outcomes, not two. A swap the box could not restart is not a failure --
-    // the new version is on disk and one restart away -- but reporting it as a plain
-    // success is the bug that had somebody watching "Riparr is restarting" forever.
-    toast(r.message, r.ok && !r.needs_restart ? "ok" : r.ok ? "warn" : "bad");
-
-    if (r.ok && r.needs_restart) {
-      const out0 = $("#upd-result");
-      if (out0) {
-        out0.hidden = false;
-        out0.className = "alert warn";
-        out0.innerHTML = `<b>${esc(r.message)}</b>
-          <div class="why" style="margin-top:8px">
-            <button class="btn" id="upd-restart">Restart Riparr now</button>
-          </div>`;
-        const rb = $("#upd-restart");
-        if (rb) rb.onclick = () => powerAction("reboot", "Restarting to finish the update",
-          "Riparr is restarting. It comes back on the new version in about a minute. "
-          + "This page reconnects on its own.");
-      }
+    if (!r.ok) {
+      // A toast is the wrong place for the only copy of a diagnosis. It vanishes, it
+      // cannot be selected, and `detail` -- the one field that says *why* -- used to
+      // be dropped on the floor entirely.
+      show("warn", r.message, (r.detail || "") + "\n\nThere is a second way in, and it does "
+        + "not depend on anything here working: open Riparr Preparer on your computer and "
+        + "choose \u201cSet up a box that\u2019s already running\u201d. It installs over SSH and "
+        + "keeps your login, settings, rip history and the MakeMKV build.");
       inst.disabled = false;
       return;
     }
-
-    // The box is about to go away on its own. Cover the page and wait for it, rather
-    // than leaving somebody looking at the old version number wondering whether it
-    // worked -- which is what a silent success looks like from the outside, and is
-    // indistinguishable from the failure it replaced.
+    // The root side is doing the work now (download, checksum, provenance, unpack,
+    // pip, swap, restart) and says where it is through a status file. Poll it. The
+    // request that asked for this came straight back, so nothing here depends on a
+    // connection staying open for the minutes a Zero 2 W needs.
     //
-    // A service restart is ~2s and a reboot ~60s, so the poll starts at very different
-    // times; `restarted` says which happened.
-    if (r.ok && r.restarted) {
-      showWaiting(r.restarted === "reboot"
-        ? "Updated. The box is restarting \u2014 about a minute."
-        : "Updated. Riparr is restarting\u2026");
-      waitForBoxBack({ startAfter: r.restarted === "reboot" ? 12000 : 2500 });
-      return;
-    }
-
-    // A toast is the wrong place for the only copy of a diagnosis. It vanishes, it
-    // cannot be selected, and `detail` — the one field that says *why* — was being
-    // dropped on the floor entirely: an update that failed on a permission error read
-    // as "The update failed. Nothing was changed." and nothing else, anywhere.
-    const out = $("#upd-result");
-    if (out) {
-      out.hidden = false;
-      out.className = `alert ${r.ok ? "ok" : "warn"}`;
-      out.innerHTML = `<b>${esc(r.message || "")}</b>${
-        r.detail ? `<div class="why" style="margin-top:6px;user-select:text">${esc(r.detail)}</div>` : ""}${
-        r.ok ? "" : `<div class="why" style="margin-top:8px">There is a second way in, and
-          it does not depend on anything here working: open <b>Riparr Preparer</b> on your
-          computer and choose <b>Set up a box that's already running</b>. It installs over
-          SSH and keeps your login, settings, rip history and the MakeMKV build.</div>`}`;
-    }
-    inst.disabled = false;
+    // `started` is the box's clock, not this browser's: a board with no RTC can be
+    // minutes off, and a result stamped by one clock compared against another either
+    // never arrives or arrives from the previous run.
+    const since = r.started || 0;
+    show("", `Installing ${esc(r.version || "")}\u2026`);
+    const poll = async () => {
+      let st = null;
+      try { st = (await api.get("/api/update/install")).state; }
+      catch (e) {
+        // The service is being restarted onto the new version: that is the success
+        // path, and the box-back wait handles it.
+        showWaiting("Updated. Riparr is restarting\u2026");
+        waitForBoxBack({ startAfter: 2500 });
+        return;
+      }
+      if (!st || (st.at || 0) < since) { setTimeout(poll, 2000); return; }
+      if (st.phase === "done") {
+        showWaiting("Updated. Riparr is restarting\u2026");
+        waitForBoxBack({ startAfter: 2500 });
+        return;
+      }
+      if (st.phase === "error") {
+        show("warn", st.message, st.detail);
+        inst.disabled = false;
+        return;
+      }
+      const pct = Math.round((st.progress || 0) * 100);
+      show("", `${st.message || st.phase} (${pct}%)`, st.detail);
+      setTimeout(poll, 2000);
+    };
+    setTimeout(poll, 1500);
   };
 
   const imp = $("#import-btn");
@@ -5011,12 +5029,20 @@ async function boot() {
   }
   hideWaiting();
 
+  state.gate = !!setup.gate;
+  showTokenField(state.gate);
   if (!setup.has_users) { wizard.step = 0; wizard.render(); return; }
 
   let me;
   try { me = await api.get("/api/auth/me"); } catch (e) { showGate(); return; }
   if (!me.username) { showGate(); return; }
   $("#menu-who").textContent = me.username;
+  // Power controls are a feature of the box, not of the page: a host with
+  // RIPARR_ALLOW_POWER=0 refuses them at the root side, so they are not shown at all.
+  const powerOn = !me.features || me.features.power !== false;
+  for (const sel of ["#sys-reboot", "#sys-poweroff", "#user-menu .menu-label"]) {
+    const el = $(sel); if (el) el.hidden = !powerOn;
+  }
 
   if (!setup.complete) {
     wizard.step = 1;                       // account exists; resume at MakeMKV

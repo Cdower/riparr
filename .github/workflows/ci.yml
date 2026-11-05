@@ -19,7 +19,7 @@ jobs:
   hooks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # ty checks the Preparer inside its own environment, and on Linux that environment
       # has PyGObject in it, which builds from source against these.
@@ -28,7 +28,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libgirepository1.0-dev libcairo2-dev pkg-config python3-dev
 
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           cache-dependency-glob: "**/uv.lock"
@@ -39,20 +39,20 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
       # For the service's own environment further down: `uv sync --locked` is the one
       # install that is guaranteed to match what the box runs.
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           cache-dependency-glob: "**/uv.lock"
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "20"
 
@@ -183,20 +183,28 @@ jobs:
               print("ok  %s" % f)
           PY
 
-      # The update swap, against the failure that ate a live box's virtualenv.
-      #
-      # v0.1.18 moved /opt/riparr aside to put the new version in its place. The service
-      # runs as `riparr` and /opt is root-owned, so that raised PermissionError every
-      # time -- appliance self-update had never once worked. And it carried the venv into
-      # a temp directory *before* that step, which the `finally` then deleted: a failed
-      # update reported "Nothing was changed" while removing the interpreter the service
-      # is defined to run. The box kept serving from open file handles and would not have
-      # survived its next restart.
-      #
-      # Run against that version this fails on "THE VIRTUALENV SURVIVED".
-      - name: The update swap keeps the virtualenv
+      # The update door. The service's whole say in an update is one release tag in one
+      # file; this checks that nothing else can be written there, that the answer is
+      # whatever root said and never a success the service did not see, and that the
+      # checksum file is found by the release's own asset URL.
+      - name: The update door carries a tag and reads root's answer
         run: |
-          python server/updater-swap.test.py
+          python server/updater-door.test.py
+
+      # RIPARR_ALLOW_POWER=0: the page is told to hide Restart and Shut down, and the
+      # requests are refused with the reason.
+      - name: The power gate hides and refuses
+        run: |
+          uv sync --locked --directory server
+          server/.venv/bin/python server/power-gate.test.py
+
+      # The edge of the web service: security headers on every response, the CSRF
+      # origin-and-header check on anything that changes state, the body limit by
+      # declared length and by streamed bytes, cookie flags, and the RIPARR_AUTH_TOKEN
+      # gate by bearer header and by gate cookie.
+      - name: The web edge refuses what the page would never send
+        run: |
+          server/.venv/bin/python server/web-edge.test.py
 
       # A 3D Blu-ray's two cuts are the same film at the same length, so longest-wins
       # picks the 3D one -- twice the size, and most players will not use it. The first
@@ -401,10 +409,12 @@ jobs:
               print(p["name"], len(p["urls"]), "sources")
           PY
 
+      # --require-hashes, as the box installs it: a requirements file missing a hash,
+      # or a wheel whose hash moved, fails here before it fails on a card.
       - name: The service starts and answers
         run: |
           python -m venv /tmp/venv
-          /tmp/venv/bin/pip install -q -r server/requirements.txt
+          /tmp/venv/bin/pip install -q --require-hashes -r server/requirements.txt
           cd server
           RIPARR_DB=/tmp/ci.db /tmp/venv/bin/python -m uvicorn riparr.main:app \
             --host 127.0.0.1 --port 9797 &
@@ -414,3 +424,68 @@ jobs:
           done
           curl -fsS http://127.0.0.1:9797/api/status | head -c 200; echo
           curl -fsS http://127.0.0.1:9797/api/setup/state
+
+  # The hardening checks: the root-side helpers against hostile input, every shell
+  # script through shellcheck, the locked dependencies against known vulnerabilities,
+  # and the sandbox of every shipped unit scored and held to a ceiling. Separate from
+  # `check` so a failure here reads as what it is.
+  hardening:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+
+      # Every script, at warning level and above. A shell script with a quoting bug
+      # is a root helper with a quoting bug.
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --version | head -2
+          shellcheck -S warning $(git ls-files '*.sh')
+
+      # The service's locked dependencies against the advisory databases, through the
+      # hashed requirements file the box installs from.
+      - name: pip-audit against the lock
+        run: |
+          uvx pip-audit -r server/requirements.txt --require-hashes --disable-pip
+
+      # apply-system.sh refuses units and helpers the service account could have
+      # written; riparr-update.sh refuses bad tags, bad checksums and escaping
+      # archives; staged-install.sh copies only the allow-listed artefacts out of a
+      # build user's staging tree. All three are about ownership, so they run as root.
+      - name: Root never installs what the service wrote
+        run: |
+          sudo bash packaging/apply-system.test.sh
+          sudo bash packaging/riparr-update.test.sh
+          sudo bash packaging/staged-install.test.sh
+
+      # The Wi-Fi watchdog's ladder and interface choice; the Wi-Fi helper against an
+      # SSID that would inject a directive. Neither needs root.
+      - name: Root helpers refuse what the service wrote
+        run: |
+          uv sync --locked --directory server
+          bash packaging/netwatch.test.sh
+          bash packaging/wifi-apply.test.sh
+
+      # install.sh's appliance/host decision and flags, and uninstall.sh against a
+      # fake root: everything the installer writes outside Riparr's directories is
+      # gone afterwards and the operator's drop-ins are not.
+      - name: The installer decides, says, and can undo
+        run: |
+          sudo bash tools/install.test.sh
+
+      # systemd-analyze security, offline, for every shipped service, against the
+      # ceilings in packaging/security-thresholds.txt. A directive dropped by accident
+      # moves the score; the score moving up fails the build.
+      - name: Sandbox exposure has not regressed
+        run: |
+          systemd-analyze --version | head -1
+          bash packaging/security-score.sh

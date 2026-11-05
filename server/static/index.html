@@ -22,6 +22,8 @@
     <p class="muted" id="gate-sub">Sign in to continue</p>
     <label class="f"><span>Username</span><input id="gate-user" autocomplete="username"></label>
     <label class="f"><span>Password</span><input id="gate-pass" type="password" autocomplete="current-password"></label>
+    <!-- Only when the box has an access token (RIPARR_AUTH_TOKEN); app.js unhides it. -->
+    <label class="f" id="gate-token-field" hidden><span>Access token</span><input id="gate-token" type="password" autocomplete="off"></label>
     <div class="gate-err" id="gate-err"></div>
     <button class="btn primary wide" type="submit">Sign in</button>
   </form>

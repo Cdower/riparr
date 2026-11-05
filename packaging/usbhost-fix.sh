@@ -12,9 +12,9 @@
 # the trap stops existing.
 set -uo pipefail
 
-RUN=/run/riparr
-STATE="$RUN/usbhost.state"
-mkdir -p "$RUN"
+# shellcheck source=packaging/status-lib.sh
+. "$(dirname "$0")/status-lib.sh"
+STATE="$STATUS_DIR/usbhost.state"
 
 say() {   # phase, message
   printf '{"phase":"%s","message":%s}\n' "$1" \
@@ -41,7 +41,7 @@ for n in /proc/device-tree/soc/usb@*; do
   fi
 done
 if [ -z "$NODE" ]; then
-  say done "Both sockets can already host a drive. Nothing needed changing."
+  say "done" "Both sockets can already host a drive. Nothing needed changing."
   exit 0
 fi
 

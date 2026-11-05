@@ -6,8 +6,23 @@ Wants=network.target
 
 [Service]
 Type=simple
+Slice=riparr.slice
+# The reboot rung is opt-in. The script's own default is 0 -- run anywhere it was not
+# set up for, it re-associates and reloads a driver and never restarts the machine.
+# This is the appliance unit, and on the appliance the reboot is the feature (a wedged
+# radio with no screen and no keyboard has no other way back), so it is on here. The
+# boot partition's riparr.conf and /etc/default/riparr are read afterwards and win:
+# tools/install.sh in host mode writes RIPARR_NETWATCH_REBOOT=0 to the latter.
+#
+# The watchdog also only runs when the interface carrying the default route is
+# wireless; on a wired box it logs why and exits (on-failure, not always, so that exit
+# is final). RIPARR_NETWATCH_IFACE names an interface to watch regardless.
+Environment=RIPARR_NETWATCH_REBOOT=1
+EnvironmentFile=-/boot/firmware/riparr.conf
+EnvironmentFile=-/boot/riparr.conf
+EnvironmentFile=-/etc/default/riparr
 ExecStart=/usr/local/lib/riparr/netwatch.sh
-Restart=always
+Restart=on-failure
 RestartSec=30
 
 # Deliberately NOT sandboxed the way riparr.service is. This restarts units, reloads a

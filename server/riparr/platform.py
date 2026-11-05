@@ -653,6 +653,29 @@ POWER_ACTIONS = {"reboot", "poweroff"}
 POWER_REQUEST = "/run/riparr/%s.request"
 
 
+def env_flag(name, default):
+    """A yes/no setting from riparr.conf. "0", "no", "false" and "off" are off; an
+    empty value is the default; anything else is on. One truth table for every switch
+    the box reads, so RIPARR_ALLOW_POWER=off and RIPARR_COOKIE_SECURE=off mean the same
+    thing."""
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in ("0", "no", "false", "off")
+
+
+def power_allowed():
+    """Whether this box lets the web page restart or shut it down.
+
+    RIPARR_ALLOW_POWER=0 (in the boot partition's riparr.conf or /etc/default/riparr)
+    turns it off. The default is on: an appliance with no power switch needs a safe way
+    to stop, and this is it. The root side enforces the same variable
+    (packaging/power-allowed.sh), so this is the polite refusal and that is the real
+    one. tools/install.sh in host mode sets it to 0.
+    """
+    return env_flag("RIPARR_ALLOW_POWER", True)
+
+
 def power_available():
     return all(os.path.exists("/etc/systemd/system/riparr-%s.path" % a)
                for a in POWER_ACTIONS) and os.access("/run/riparr", os.W_OK)
@@ -662,6 +685,9 @@ def power_action(action):
     """Ask the system to restart or shut down. Returns (ok, message)."""
     if action not in POWER_ACTIONS:
         return False, "Unknown action."
+    if not power_allowed():
+        return False, ("Restarting and shutting down from the web page are turned off "
+                       "on this box (RIPARR_ALLOW_POWER=0).")
     if MOCK:
         return True, "%s (simulated)" % action
     if not power_available():
@@ -681,7 +707,7 @@ RESTART_UNIT = "/etc/systemd/system/riparr-restart.path"
 
 
 def restart_available():
-    return os.path.exists(RESTART_UNIT) and os.access(RUN_DIR, os.W_OK)
+    return door_available(RESTART_UNIT)
 
 
 def request_service_restart():
@@ -710,8 +736,7 @@ USBHOST_REQUEST = "/run/riparr/usbhost.request"
 
 
 def usb_host_available():
-    return (os.path.exists("/etc/systemd/system/riparr-usbhost.path")
-            and os.access("/run/riparr", os.W_OK))
+    return door_available("/etc/systemd/system/riparr-usbhost.path")
 
 
 def usb_host_fix():
@@ -1251,8 +1276,47 @@ def wifi_psk(ssid, passphrase):
 
 RUN_DIR = "/run/riparr"
 WIFI_REQUEST = "/run/riparr/wifi.request"
-WIFI_STATE = "/run/riparr/wifi.state"
 WIFI_UNIT = "/etc/systemd/system/riparr-wifi.path"
+
+# ── where root answers ──
+#
+# /run/riparr is this service's own runtime directory, and that is exactly why root
+# must not write into it. A root helper that wrote its progress file there could be
+# made to write through a symlink this account planted -- a compromised service
+# turning "makemkv.state" into a link to /etc/shadow and waiting for the next build.
+# So every root-side helper publishes into a directory that is root's, world-readable
+# and closed to everyone else, and this side only ever reads from it. The requests
+# still go the other way, through /run/riparr; root reads those and never trusts what
+# is in them beyond one strictly-matched word.
+#
+# The legacy path is still looked at, for one window: a box that has just updated,
+# where the helpers that wrote the old place have not been replaced yet.
+STATUS_DIR = os.environ.get("RIPARR_STATUS_DIR", "/run/riparr-status")
+
+
+def read_status(name, as_json=True):
+    """What root last wrote as `name` (makemkv.state, wifi.state, ...), or None.
+
+    One open on the happy path: the root-owned directory first, then the legacy
+    location for the window between an update landing and the helpers that wrote the
+    old place being replaced (remove the fallback once no supported release predates
+    0.8). `as_json=False` returns the text, for the build logs.
+    """
+    for d in (STATUS_DIR, RUN_DIR):
+        try:
+            with open(os.path.join(d, name)) as f:
+                return json.load(f) if as_json else f.read()
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def door_available(unit):
+    """Can this process ring a one-way door? Its path unit is installed and the
+    runtime directory the request goes into is writable."""
+    return os.path.exists(unit) and os.path.isdir(RUN_DIR) and os.access(RUN_DIR, os.W_OK)
 
 
 # ── what should be installed outside /opt/riparr, and whether it is ──
@@ -1279,6 +1343,9 @@ SYSTEM_COMPONENTS = [
     ("riparr-remount.service",  "unit",   "The Reconnect button",               True),
     ("riparr-provision.path",   "unit",   "Applies system changes after an update", True),
     ("riparr-provision.service","unit",   "Applies system changes after an update", True),
+    ("riparr-update.path",      "unit",   "Installing updates from the web page", True),
+    ("riparr-update.service",   "unit",   "Installing updates from the web page", True),
+    ("riparr.slice",            "unit",   "Resource limits for everything Riparr runs", True),
     ("riparr-netwatch.service", "unit",   "Recovers Wi-Fi that dies silently",  True),
     ("riparr-wifi.path",        "unit",   "Changing Wi-Fi networks",            True),
     ("riparr-wifi.service",     "unit",   "Changing Wi-Fi networks",            True),
@@ -1300,12 +1367,15 @@ SYSTEM_COMPONENTS = [
     ("makemkv-run.sh",          "script", "Installing MakeMKV",                 True),
     ("makemkv-install.sh",      "script", "Installing MakeMKV",                 True),
     ("makemkv-manifest.json",   "script", "Which MakeMKV to install, and its checksums", True),
+    ("staged-install.sh",       "script", "Installing MakeMKV and the DVD tools without building as root", True),
+    ("power-allowed.sh",        "script", "Restart and shut down from the web page", True),
     ("dvdtools-install.sh",     "script", "Installing the DVD backup tools",    True),
     ("cdtools-install.sh",      "script", "Installing the music CD tools",      True),
     ("netwatch.sh",             "script", "Recovers Wi-Fi that dies silently",  True),
     ("netwatch-settings.py",    "script", "Your Wi-Fi recovery settings",       True),
     ("powerkey.py",             "script", "The power button",                   True),
     ("mount-library.sh",        "script", "Mounts your library share",          True),
+    ("riparr-update.sh",        "script", "Installing updates from the web page", True),
     ("apply-system.sh",         "script", "Installs the parts on this list",    True),
 ]
 
@@ -1379,8 +1449,7 @@ def remount_bridge_available():
     Same one-way door as the rest. Mounting needs privileges this service does not have
     and must never be given, so the whole interface is one empty file.
     """
-    return os.path.exists(REMOUNT_UNIT) and os.path.isdir(RUN_DIR) and os.access(
-        RUN_DIR, os.W_OK)
+    return door_available(REMOUNT_UNIT)
 
 
 def request_remount():
@@ -1416,11 +1485,11 @@ def provision_bridge_available():
     sat in packaging/ looking installed.
 
     Same one-way door as the rest: one empty file, nothing in it to parse. The request
-    means "install what is in /opt/riparr/packaging now", and that arrived through a
-    checksum-verified release archive.
+    means "install what is in /opt/riparr/packaging now". That tree is root's -- the
+    root-side update helper put it there after checking the release's checksum and
+    provenance -- and apply-system.sh refuses anything in it that is not.
     """
-    return os.path.exists(PROVISION_UNIT) and os.path.isdir(RUN_DIR) and os.access(
-        RUN_DIR, os.W_OK)
+    return door_available(PROVISION_UNIT)
 
 
 def request_provision():
@@ -1440,6 +1509,52 @@ def request_provision():
         return False
 
 
+UPDATE_REQUEST = "/run/riparr/update.request"
+UPDATE_UNIT = "/etc/systemd/system/riparr-update.path"
+# A release tag and nothing else. The root side applies the same pattern before it
+# builds a URL out of the word; this side applies it so a bad tag is refused with a
+# sensible message instead of a silent no-op on the other side of the door.
+UPDATE_TAG = re.compile(r"^v?[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$")
+
+
+def update_door_available():
+    """Can this process ask the root side to install a release?
+
+    The one door that carries a word. The in-app updater used to swap /opt/riparr
+    itself, as this account, and then ask root to install units from the tree it had
+    just written -- so a compromised service could hand root anything. Now this side
+    names a release tag and the root side (packaging/riparr-update.sh) fetches,
+    verifies, unpacks and installs it into a tree this account can only read.
+    """
+    return door_available(UPDATE_UNIT)
+
+
+def request_update(tag):
+    """Ask the root side to install release `tag`. True if the request was placed.
+
+    Refuses anything that is not a version: the file's whole content is the tag, and
+    the root side matches it against the same pattern before using it anywhere.
+    """
+    if not isinstance(tag, str) or not UPDATE_TAG.fullmatch(tag):
+        return False
+    if MOCK:
+        return True
+    if not update_door_available():
+        return False
+    try:
+        with open(UPDATE_REQUEST, "w") as f:
+            f.write(tag + "\n")
+        return True
+    except OSError:
+        return False
+
+
+def update_state():
+    """What the root side said about the last update, or None if it never ran."""
+    st = read_status("update.state")
+    return st if isinstance(st, dict) and "phase" in st else None
+
+
 def wifi_bridge_available():
     """Can this process ask the root side to rewrite wpa_supplicant's config?
 
@@ -1449,8 +1564,7 @@ def wifi_bridge_available():
     nothing in it to trust -- the root side reads the network list from the database,
     which only this service can write, and only behind authentication.
     """
-    return os.path.exists(WIFI_UNIT) and os.path.isdir(RUN_DIR) and os.access(
-        RUN_DIR, os.W_OK)
+    return door_available(WIFI_UNIT)
 
 
 # Off the appliance there is no wpa_supplicant to reload, so the mock walks the same
@@ -1486,7 +1600,7 @@ def wifi_apply():
     return {"ok": True, "message": "Applying"}
 
 
-WIFI_MERGED = "/run/riparr/wifi.merged.json"
+WIFI_MERGED = "wifi.merged.json"
 
 
 def wifi_adopt():
@@ -1506,11 +1620,7 @@ def wifi_adopt():
     from . import db
     if MOCK:
         return False
-    try:
-        with open(WIFI_MERGED) as f:
-            merged = json.load(f)
-    except (OSError, ValueError):
-        return False
+    merged = read_status(WIFI_MERGED)
     if not isinstance(merged, list):
         return False
     have = db.get("wifi_networks") or []
@@ -1529,11 +1639,7 @@ def wifi_apply_state():
     """What the root side said about the last apply, or None if it has not run."""
     if MOCK:
         return _MOCK_WIFI["state"]
-    try:
-        with open(WIFI_STATE) as f:
-            st = json.load(f)
-    except (OSError, ValueError):
-        return None
+    st = read_status("wifi.state")
     return st if isinstance(st, dict) else None
 
 

@@ -1,0 +1,36 @@
+# Every Riparr unit runs in this slice, so one drop-in can throttle the whole box's
+# ripping without touching each unit: the service, the MakeMKV build, the DVD and CD
+# tool installs, the update helper and the watchdogs all land here. MakeMKV,
+# HandBrake-style encoders, ffmpeg and cd-paranoia are children of riparr.service and
+# stay in its cgroup -- nothing in the service uses systemd-run or a user session to
+# start them -- so a limit here reaches every one of them.
+#
+# Nothing is limited by default: an appliance exists to rip as fast as the drive
+# allows. On a shared host, put what you want in
+#
+#   /etc/systemd/system/riparr.slice.d/override.conf
+#
+# for example:
+#
+#   [Slice]
+#   # Half the CPU share of an ordinary service when the host is busy; no effect
+#   # when it is idle.
+#   CPUWeight=50
+#   # Keep rip work from starving anything else for disk time.
+#   IOWeight=50
+#   # Start reclaiming memory above 1 GiB; refuse more than 1.5 GiB.
+#   MemoryHigh=1G
+#   MemoryMax=1536M
+#
+# and in /etc/systemd/system/riparr.service.d/override.conf for the service alone:
+#
+#   [Service]
+#   Nice=10
+#   IOSchedulingClass=idle
+#
+# then `systemctl daemon-reload`.
+[Unit]
+Description=Riparr — disc ripping appliance (every Riparr unit lives here)
+Documentation=https://github.com/jackharvest/riparr
+
+[Slice]

@@ -396,6 +396,30 @@ the password itself is never written down.
 | **Performance profiling** | Off by default. Sends a CPU profile to your own Grafana Cloud stack so somebody can see where the box spends its time. Set under Settings → General. See [Performance profiling](#performance-profiling) below |
 | **Restart / shut down** | In the account menu (the person icon, top right), not on a page. Rarely needed — the box is built to survive losing power, but shutting down here is the safe way to stop it before unplugging |
 
+
+## Box configuration (`riparr.conf`)
+
+These are not on any page. They are `KEY=value` lines in the file the Preparer wrote to
+the card's boot partition (`/boot/firmware/riparr.conf` on a Raspberry Pi,
+`/boot/riparr.conf` on Armbian), or in `/etc/default/riparr`, which is read afterwards
+and wins. Every Riparr unit reads them -- the service and the root-side helpers alike --
+so a setting here cannot be talked round from the web page. Restart the units after a
+change: `sudo systemctl restart riparr riparr-netwatch`.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `RIPARR_PORT` | `9797` | The web interface's port |
+| `RIPARR_HOST` | `0.0.0.0` | The address it listens on. `127.0.0.1` for loopback only, behind a reverse proxy or `tailscale serve` -- see [hardened deployment](../hardened-deployment.md) |
+| `RIPARR_ALLOW_POWER` | `1` | `0` turns Restart and Shut down off in the web page *and* at the root side, and hands the physical power button back to the system. The installer sets `0` on a machine that is not an appliance |
+| `RIPARR_NETWATCH_REBOOT` | `1` on the appliance | `0` means the Wi-Fi watchdog may re-associate and reload the driver but never restart the box, whatever the page's "restart as a last resort" switch says. The installer sets `0` on a machine that is not an appliance |
+| `RIPARR_NETWATCH_IFACE` | the interface with the default route | Watch this interface whether or not it is wireless. Unset, the watchdog does nothing on a wired box |
+| `RIPARR_AUTH_TOKEN` | unset | An access token every API request must carry, as well as a login: the sign-in form asks for it, or send `Authorization: Bearer <token>`. Off unless set |
+| `RIPARR_COOKIE_SECURE` | `0` | `1` marks the sign-in cookies `Secure`. Only behind HTTPS -- over plain HTTP the browser would never send them back |
+| `RIPARR_MAX_BODY_BYTES` | `67108864` | The largest request body the service reads (backup uploads, settings imports) |
+| `RIPARR_UPDATE_REQUIRE_PROVENANCE` | `0` | `1` makes the updater refuse a release whose build attestation it cannot fully verify (needs `gh` or sigstore-python on the box) |
+| `RIPARR_REPO` | `jackharvest/riparr` | Where updates come from. Changing it changes who you trust with root on this box |
+| `RIPARR_LED_SPI` | `/dev/spidev1.0` | The SPI device the status LED is on |
+
 ### Updates
 
 Riparr looks for a new version every six hours and **tells you when it finds one — once

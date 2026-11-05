@@ -38,7 +38,7 @@ from . import platform as P
 
 RUNDIR = "/run/riparr"
 REQUEST = os.path.join(RUNDIR, "dvdtools.request")
-STATE = os.path.join(RUNDIR, "dvdtools.state")
+STATE = "dvdtools.state"        # root's answer, read via platform.read_status
 BRIDGE_UNIT = "/etc/systemd/system/riparr-dvdtools.path"
 
 # What a finished backup must contain, per family. Checked after the tool exits, because
@@ -111,12 +111,7 @@ def can_backup(family):
 # ── installing them ──
 
 def _read_state():
-    try:
-        import json
-        with open(STATE) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return None
+    return P.read_status(STATE)
 
 
 def installing():
