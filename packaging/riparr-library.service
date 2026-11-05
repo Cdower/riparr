@@ -17,12 +17,20 @@ Wants=network-online.target
 Before=riparr.service
 
 [Service]
+Slice=riparr.slice
 Type=oneshot
 RemainAfterExit=yes
 # /usr/local/lib/riparr, not /opt/riparr: that tree is owned by the riparr account,
 # and a root unit executing from it would hand the unprivileged service a way to run
 # anything as root. install.sh already states that rule for every other helper; this
 # unit predates it being applied here.
+# The share's password reaches mount.cifs through a 0600 file in /run that outlives
+# the mount by nothing, never on a command line. To keep it out of the service's
+# database altogether, hand it to this unit as a credential --
+# packaging/examples/library-credentials.conf shows the LoadCredential= drop-in -- and
+# mount-library.sh uses that for the default share. Not set here, because a
+# LoadCredential= whose source file is absent fails the unit, and on an appliance the
+# database is where the password lives.
 ExecStart=/usr/local/lib/riparr/mount-library.sh
 # Lazy: a NAS that has gone away must not leave a unit that cannot stop, because
 # riparr.service is ordered after this one and would never start again.

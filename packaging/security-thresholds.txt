@@ -2,6 +2,12 @@
 # packaging/security-score.sh in CI. Lower is better; a unit may score under its
 # ceiling, never over. Move a ceiling down when a sandbox tightens; move one up only
 # with a reason written beside it. Recorded with: packaging/security-score.sh --record
+#
+# The root-side helpers (the one-way doors, the watchdogs, the installers) score
+# high on purpose: each one mounts, reboots, writes /etc or /sys, or runs apt, and a
+# namespaced unit would do those things privately and invisibly -- see the comment in
+# each unit and JOURNAL.md. Their ceilings pin them where they are; the service is the
+# one that can and does go low.
 riparr-cdtools.service       9.4
 riparr-dvdtools.service      9.4
 riparr-library.service       9.4
@@ -17,4 +23,4 @@ riparr-thermal.service       9.2
 riparr-update.service        9.4
 riparr-usbhost.service       9.4
 riparr-wifi.service          9.4
-riparr.service               8.4
+riparr.service               1.7

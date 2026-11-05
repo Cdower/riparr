@@ -3,6 +3,7 @@ Description=Riparr thermal guard — keep the box cool where the kernel doesn't
 Documentation=https://github.com/jackharvest/riparr
 
 [Service]
+Slice=riparr.slice
 Type=simple
 ExecStart=/usr/local/lib/riparr/thermal.sh
 Restart=always

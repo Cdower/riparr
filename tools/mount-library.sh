@@ -212,8 +212,19 @@ while IFS=$'\t' read -r SID ISDEF HOST SHARE USER DOMAIN; do
 
   # The share row holds the password, so it is read here and written only to a 0600
   # file. Never on a command line: /proc/*/cmdline is world-readable.
+  #
+  # An operator who would rather the default share's password were not in the
+  # service's database at all can hand it to the unit as a systemd credential instead
+  # (packaging/examples/library-credentials.conf): LoadCredential= puts it in
+  # $CREDENTIALS_DIRECTORY, root-readable, for the life of the unit. When it is there
+  # it is used for the default share, in mount.cifs's own format, as it is.
   CRED=$(mktemp "${RIPARR_RUN_DIR:-/run}/riparr-cred.XXXXXX") || continue
   chmod 600 "$CRED"
+  if [ "$ISDEF" = "1" ] && [ -n "${CREDENTIALS_DIRECTORY:-}" ] \
+     && [ -r "$CREDENTIALS_DIRECTORY/library.cred" ]; then
+    log "using the library.cred credential for the default share"
+    cat "$CREDENTIALS_DIRECTORY/library.cred" >> "$CRED"
+  else
   "$PY" - "$DB" "$SID" >> "$CRED" <<'PYEOF'
 import sqlite3, sys
 c = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True); c.row_factory = sqlite3.Row
@@ -229,6 +240,7 @@ print("username=%s" % user)
 print("password=%s" % ((r["password"] if r else "") or ""))
 PYEOF
   [ "$DOMAIN" != "-" ] && echo "domain=$DOMAIN" >> "$CRED"
+  fi
 
   UID_R=$(id -u riparr 2>/dev/null || echo 0)
   GID_R=$(id -g riparr 2>/dev/null || echo 0)

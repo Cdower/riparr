@@ -40,6 +40,11 @@ cat > "$BIN/mount" <<EOF
 # mount -t cifs //host/share target -o opts
 printf '%s\t%s\n' "\$4" "\$3" >> "$STATE"
 echo "mount \$4" >> "$CALLS"
+# Keep a copy of the credentials file the real mount would read: it is deleted the
+# moment the mount returns, and what went into it is the point of one test below.
+for o in \$(echo "\$6" | tr ',' ' '); do
+  case "\$o" in credentials=*) cp "\${o#credentials=}" "$T/last-cred" ;; esac
+done
 EOF
 cat > "$BIN/umount" <<EOF
 #!/bin/sh
@@ -136,6 +141,17 @@ check "each refusal is named" "$(bash "$REPO/tools/mount-library.sh" 2>&1 >/dev/
 dbpy "db.set('movie_share_id', None); db.set('tv_share_id', None); db.set('music_share_id', None); [db.delete_share(i) for i in ($H1, $H2, $H3)]"
 run
 check "and nothing else was affected" "$(mounted)" "$BEFORE"
+
+echo "a credential handed to the unit replaces the database's password for the default"
+: > "$STATE"; rm -f "$T/last-cred"
+run
+check "without one, the database's user is used" "$(grep -c '^username=$' "$T/last-cred")" "1"
+mkdir -p "$T/creds"; printf 'username=vault\npassword=from-the-credential\n' > "$T/creds/library.cred"
+: > "$STATE"; rm -f "$T/last-cred"
+CREDENTIALS_DIRECTORY="$T/creds" run
+check "with one, the credential's user and password are used" "$(tr '\n' ';' < "$T/last-cred")" "username=vault;password=from-the-credential;"
+check "the credentials file is still 0600 and gone afterwards" "$(find "$T" -maxdepth 1 -name 'riparr-cred.*' | wc -l)" "0"
+rm -rf "$T/creds"
 
 echo "a wrong share that will not unmount is not mounted over"
 : > "$STATE"; printf '%s\t%s\n' "$MOUNT" "//stale/Old" >> "$STATE"

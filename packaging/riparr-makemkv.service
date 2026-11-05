@@ -6,6 +6,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+Slice=riparr.slice
 Type=oneshot
 # systemd sets no HOME for a unit without User=, and the install script runs under
 # `set -u`, so an unset HOME kills it on line 12 before it parses an argument. It also

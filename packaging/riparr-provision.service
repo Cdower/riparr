@@ -3,6 +3,7 @@ Description=Apply Riparr system changes after an in-app update
 Documentation=https://github.com/jackharvest/riparr
 
 [Service]
+Slice=riparr.slice
 Type=oneshot
 ExecStartPre=/bin/rm -f /run/riparr/provision.request
 # Root's own copy, and only that. This unit used to refresh it first from

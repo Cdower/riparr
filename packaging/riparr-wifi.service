@@ -3,6 +3,7 @@ Description=Apply Riparr's saved Wi-Fi networks
 Documentation=https://github.com/jackharvest/riparr
 
 [Service]
+Slice=riparr.slice
 Type=oneshot
 ExecStartPre=/bin/rm -f /run/riparr/wifi.request
 ExecStart=/usr/local/lib/riparr/wifi-apply.sh

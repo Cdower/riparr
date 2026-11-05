@@ -68,6 +68,22 @@ tests as root, and `systemd-analyze security` on every shipped unit against a ce
 per unit; every action is pinned to a commit and Dependabot keeps the pins, the lock
 files and the actions current.
 
+**The service runs in a much smaller box.** `riparr.service` now has a read-only view
+of the whole system except its state, staging and library directories; sees no device
+except the optical drive, SCSI generic, the SPI LED and the Pi's firmware channel; cannot
+load modules, change the clock or hostname, see other users' processes, use realtime
+scheduling, namespaces or setuid; holds no capability; and is limited to the
+`@system-service` system calls and the Unix, IP and netlink socket families.
+`systemd-analyze security` scores it 1.7 (it was 8.4), and CI holds every unit to its
+recorded ceiling. `RIPARR_HOST` (default `0.0.0.0`) lets a box listen on loopback behind
+a reverse proxy or `tailscale serve`. Every Riparr unit now runs in `riparr.slice`, so one
+drop-in can throttle all rip work at once; `packaging/examples/` has that drop-in, a
+credential drop-in that keeps the default share's password out of the database
+(`LoadCredential=`), and the one-file way back out of the sandbox if a board turns up
+something it missed. The sandbox was checked by scoring, by a system-call trace of the
+service and its children through the whole test suite, and against the code's device and
+path needs -- not yet on a board with a real drive; `docs/security.md` says how to.
+
 **A box can now stream a CPU profile to Grafana Cloud.** Settings → General has a new
 Performance profiling section: paste in the Profiles URL, stack ID and a token, press
 "Save and send a test profile", and the box sends which of its own functions are using
