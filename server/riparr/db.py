@@ -124,6 +124,16 @@ ADDED_COLUMNS = {
         # (`sent`), which is what verification and the purge check against -- the album
         # folder on the share may also hold the other discs of the set.
         ("album", "TEXT"),
+        # ── what Auto Rip does with each kind of disc ──
+        # 1 when somebody pressed Rip rather than Auto Rip noticing a disc. "Leave it
+        # alone" is an Auto Rip setting: a person asking for a rip has overridden it.
+        ("manual", "INTEGER DEFAULT 0"),
+        # 1 once a "Show me first" question has been answered, so the answered job does
+        # not stop to show itself again when it goes back through identify.
+        ("confirmed", "INTEGER DEFAULT 0"),
+        # JSON list of a film's extras to rip beside it ({index, seconds, bytes, name}),
+        # and as they are read, where each landed. Empty unless `movie_extras` is "all".
+        ("extras", "TEXT"),
     ],
     "discs": [
         ("title_index", "INTEGER"),    # the remembered title choice (R5: fix once, ever)
@@ -151,6 +161,24 @@ ADDED_COLUMNS = {
 DEFAULTS = {
     "setup_complete": False,
     "auto_rip": False,
+    # Keep the box cool while ripping: CPU ceiling and two cores during a rip
+    # (packaging/thermal.sh), and a pause between titles when it is hot (rip._cool_down).
+    # The thermal floor in thermal.sh runs whatever this says.
+    "cool_running": True,
+    # What Auto Rip does with each kind of disc once it knows what it is: "rip" it,
+    # "show" the plan first, or "ignore" it (eject). Pressing Rip always rips. Data is
+    # anything that is none of the others -- a game disc, a disc of files.
+    "auto_movie": "rip",
+    "auto_tv": "rip",
+    "auto_music": "rip",
+    "auto_data": "rip",
+    # A film's or a season's extras: "none" or "all". Into the Featurettes folder.
+    "movie_extras": "none",
+    "tv_extras": "none",
+    # A data disc is saved as one ISO image -- byte for byte, boot sector and all.
+    "data_share_id": None,
+    "data_folder": "Data",
+    "data_template": "{Title}.iso",
     "theme": "servarr",
     "movie_template": "{Title} ({Year})/{Title} ({Year}).mkv",
     "tv_template": "{Title} ({Year})/Season {Season:00}/"
@@ -502,6 +530,15 @@ def init():
         for name, decl in cols:
             if name not in have:
                 c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, decl))
+    # "Always show me the season plan" became Auto Rip's per-kind "Show me first" for
+    # TV. Carried across once, so nobody who chose to see every plan stops seeing it.
+    stored = {r["key"]: json.loads(r["value"]) for r in c.execute(
+        "SELECT key, value FROM settings WHERE key IN ('on_season_disc','auto_tv')")}
+    if stored.get("on_season_disc") == "ask" and "auto_tv" not in stored:
+        c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
+                  ("auto_tv", json.dumps("show")))
+        c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
+                  ("on_season_disc", json.dumps("unsure")))
     c.commit()
     _ensure_default_share()
 
@@ -724,6 +761,7 @@ KINDS = {
     "movie": ("movie_share_id", "movie_folder", "Movies"),
     "tv":    ("tv_share_id",    "tv_folder",    "TV"),
     "music": ("music_share_id", "music_folder", "Music"),
+    "data":  ("data_share_id",  "data_folder",  "Data"),
 }
 
 
@@ -904,7 +942,7 @@ INTERRUPTIBLE = ["identifying", "ripping", "transferring", "verifying"]
 # Columns held as JSON text. Encoding them in one place rather than at each call site
 # is what stopped `episode_plan` from being written as a Python repr the first time a
 # caller forgot -- which SQLite accepts happily and json.loads does not.
-_JSON_COLUMNS = ("titles", "episode_plan", "album")
+_JSON_COLUMNS = ("titles", "episode_plan", "album", "extras")
 
 
 def _encode_json(fields):
@@ -994,8 +1032,95 @@ def next_episode(series_id, season, series_name=None):
         for e in plan.get("episodes") or []:
             if e.get("state") == "skipped":
                 continue
-            highest = max(highest, int(e.get("episode_last") or e.get("episode") or 0))
+            highest = max(highest, row_span(e)[1])
     return highest + 1 if highest else None
+
+
+def row_span(e):
+    """(first, last) of a plan row in *disc* order -- what continuation counts in.
+
+    `position` where the plan has one; plans from before DVD-order naming carry only
+    `episode`, which was the same number then.
+    """
+    first = int(e.get("position") or e.get("episode") or 0)
+    last = int(e.get("position_last") or e.get("episode_last") or 0)
+    if "position" not in e:
+        last = int(e.get("episode_last") or e.get("episode") or 0)
+    return first, max(first, last)
+
+
+def season_start(series_id, season, series_name=None, disc=None, count=0):
+    """Where this disc's numbering starts, and whether that is known or guessed.
+
+    Returns (first_episode, sure). first_episode is None when nothing about this season
+    has been ripped and the disc gives no number to reason from.
+
+    `next_episode` answers "after the highest episode so far", which is right only when
+    discs go in in order -- and people put in disc 3 before disc 2 all the time: the
+    box set is open on the sofa, disc 2 is in the other player. Disc 2 was then numbered
+    after disc 3, silently, and the season ended up with its middle third filed as the
+    end. The label usually says which disc it is (`THE_WIRE_S01_D03`), so use it:
+
+    * disc 1 starts at 1;
+    * disc N whose predecessor is ripped starts right after it;
+    * disc N whose *successor* is ripped ends right before it (needs `count`);
+    * this same disc number ripped before (another pressing, a re-rip) starts where
+      that one did;
+    * anything else is a gap -- disc 4 with only disc 1 done -- and the answer is an
+      estimate from the average disc, reported as not sure so the plan stops and asks.
+
+    No disc number, or no ripped disc of this season that recorded one: fall back to
+    `next_episode`, which is right for every set ripped in order.
+    """
+    plain = next_episode(series_id, season, series_name=series_name)
+    if season is None or (not series_id and not series_name):
+        return plain, plain is not None
+    if not disc:
+        return plain, plain is not None
+    if series_id:
+        where, args = "series_id=?", [series_id]
+    else:
+        where, args = "series_id IS NULL AND title=?", [series_name]
+    rows = conn().execute(
+        "SELECT episode_plan FROM jobs WHERE kind='tv' AND season=? AND %s "
+        "AND state='done' AND episode_plan IS NOT NULL" % where,
+        [season] + args).fetchall()
+    discs = {}                                   # disc number -> (first, last)
+    for row in rows:
+        try:
+            plan = json.loads(row["episode_plan"]) or {}
+        except (ValueError, TypeError):
+            continue
+        n = plan.get("disc")
+        nums = [row_span(e) for e in plan.get("episodes") or []
+                if e.get("state") != "skipped"]
+        if not n or not nums:
+            continue
+        lo, hi = min(a for a, _ in nums), max(b for _, b in nums)
+        old = discs.get(int(n))
+        discs[int(n)] = (min(lo, old[0]), max(hi, old[1])) if old else (lo, hi)
+    disc = int(disc)
+    if disc in discs:
+        return discs[disc][0], True
+    if disc == 1:
+        return 1, True
+    if disc - 1 in discs:
+        return discs[disc - 1][1] + 1, True
+    if disc + 1 in discs and count and discs[disc + 1][0] - count >= 1:
+        return discs[disc + 1][0] - count, True
+    if not discs:
+        # Nothing recorded a disc number. If nothing at all is ripped, a disc that says
+        # it is number 3 is not the start of the season, whatever the counter thinks.
+        if plain is None and count:
+            return (disc - 1) * count + 1, False
+        return plain, plain is not None
+    # A gap. Estimate from the discs we have seen: the average episodes per disc.
+    per = sum(b - a + 1 for a, b in discs.values()) / float(len(discs))
+    below = [n for n in discs if n < disc]
+    if below:
+        n = max(below)
+        return int(round(discs[n][1] + 1 + per * (disc - n - 1))), False
+    return max(1, int(round((disc - 1) * per)) + 1), False
 
 
 def get_job(job_id):
@@ -1053,8 +1178,12 @@ def drive_busy():
     back, and what it is doing now -- pushing bytes at a NAS -- has no claim on the
     drive at all.
     """
+    # Less a season that has already been read and is waiting only on its naming: its
+    # disc is out of the tray (see rip._hold_after_rip), and holding the drive for a
+    # question that can be answered tomorrow is what made a box set stop overnight.
     row = conn().execute(
-        "SELECT * FROM jobs WHERE state IN (%s) ORDER BY id LIMIT 1"
+        "SELECT * FROM jobs WHERE state IN (%s) "
+        "AND NOT (state='needs_input' AND local_path IS NOT NULL) ORDER BY id LIMIT 1"
         % ",".join("?" * len(DRIVE_STATES)), DRIVE_STATES).fetchone()
     return dict(row) if row else None
 

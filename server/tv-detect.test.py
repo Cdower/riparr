@@ -124,6 +124,57 @@ DECOYS = [{"index": i, "seconds": 6000 - i, "bytes": 24 * GB - i * 1000,
            "segments": "1", "chapters": 20} for i in range(8)]
 check("decoys share a segment and collapse to one", tv.analyse(DECOYS, FLOOR), None)
 
+print("a film with featurettes is not a season with the film as its play-all")
+# Shipped in 0.6.1: two or three featurettes of similar length made a "cluster", and the
+# film -- the longest title -- was taken for the play-all and excluded. The film is not
+# the featurettes strung together, by segments or by length, so it is a film.
+check("film plus two 25-minute featurettes",
+      tv.analyse([t(0, 120, 8, "00800.mpls", "1"), t(1, 25, 1, "00801.mpls", "2"),
+                  t(2, 26, 1, "00802.mpls", "3")], FLOOR), None)
+check("film plus three featurettes, DVD, no segment map",
+      tv.analyse([t(0, 110), t(1, 16), t(2, 18), t(3, 20)], FLOOR), None)
+check("film plus four featurettes",
+      tv.analyse([t(0, 120), t(1, 20), t(2, 19.7), t(3, 20.3), t(4, 20.2)], FLOOR), None)
+DVD_PLAYALL = [t(0, 22), t(1, 21.7), t(2, 22.2), t(3, 21.8), t(4, 85.8)]
+f_dvd = tv.analyse(DVD_PLAYALL, FLOOR)
+check("a DVD play-all with no segment map is recognised by adding up",
+      (len(f_dvd["episodes"]), f_dvd["play_all"]["index"]), (4, 4))
+BONUS_DOC = [t(i, 42 + i * 0.2, source="0080%d.mpls" % i, segments=str(i)) for i in range(6)] + [
+    t(9, 100, 6, "00900.mpls", "50")]
+f_doc = tv.analyse(BONUS_DOC, FLOOR)
+check("a feature-length bonus on a real season disc is an extra, not a play-all",
+      (len(f_doc["episodes"]), f_doc["play_all"], [e["index"] for e in f_doc["extras"]]),
+      (6, None, [9]))
+
+print("the last disc's two episodes and their play-all are two episodes")
+# The play-all of a two-episode disc is exactly twice an episode, which is the length of
+# a double-length premiere. Read as one, both episodes went to disk twice.
+TWO = [t(0, 44, source="00800.mpls", segments="1"), t(1, 43.3, source="00801.mpls", segments="2"),
+       t(2, 85, 7.8, source="00802.mpls", segments="1,2", chapters=12)]
+f_two = tv.analyse(TWO, FLOOR)
+check("two episodes", [e["index"] for e in f_two["episodes"]], [0, 1])
+check("and the 2x title is the play-all", f_two["play_all"]["index"], 2)
+TWO_DVD = [t(0, 44), t(1, 43.3), t(2, 85)]
+check("on a DVD too, by adding up", len(tv.analyse(TWO_DVD, FLOOR)["episodes"]), 2)
+
+print("eleven-minute cartoons are episodes, not extras")
+CARTOONS = [t(i, 11 + (i % 3) * 0.2, 0.6, "%05d.mpls" % (800 + i), str(i)) for i in range(20)] + [
+    t(40, 4, 0.2, "00900.mpls", "90"), t(41, 6, 0.3, "00901.mpls", "91")]
+f_c = tv.analyse(CARTOONS, FLOOR)
+check("twenty of them", f_c and len(f_c["episodes"]), 20)
+SHORTS = [t(i, 7, 0.4, "%05d.mpls" % (800 + i), str(i)) for i in range(12)]
+check("seven-minute shorts too", len(tv.analyse(SHORTS, FLOOR)["episodes"]), 12)
+DELETED = [t(0, 118, 30, "00800.mpls", "1")] + [
+    t(i, 6 + i * 0.1, 0.3, "%05d.mpls" % (900 + i), str(10 + i)) for i in range(1, 7)]
+check("a film with six short deleted scenes is still a film", tv.analyse(DELETED, FLOOR), None)
+print("many short featurettes do not outvote fewer, longer episodes")
+MIXED = [t(i, 42 + i * 0.3, 3.9, "%05d.mpls" % (800 + i), str(i)) for i in range(6)] + [
+    t(20 + i, 8 + i * 0.1, 0.5, "%05d.mpls" % (900 + i), str(20 + i)) for i in range(10)]
+f_m = tv.analyse(MIXED, FLOOR)
+check("the six episodes win on running time", sorted(e["index"] for e in f_m["episodes"]),
+      list(range(6)))
+check("and the ten featurettes are extras", len(f_m["extras"]), 10)
+
 # ── ordering ─────────────────────────────────────────────────────────────────
 
 print("segment map beats playlist numbering when they disagree")
@@ -137,17 +188,52 @@ f3 = tv.analyse(DISAGREE, FLOOR)
 check("the play-all is authoritative", f3["order_source"], "segments")
 check("so the .mpls order is overruled", [e["index"] for e in f3["episodes"]], [0, 1, 2])
 
-print("a partial segment map is refused, not half-used")
-# One episode is not in the play-all's map. Half a season in the right order and half
-# appended arbitrarily is harder to spot than an obviously unsorted one.
+print("a play-all that stops short orders the rest by segment, when the disc agrees")
+# Samurai Jack season 5's shape: the play-all holds episodes 1-2 and stops; episode 3
+# is a playlist numbered after them, on the segment after theirs. The playlist numbers
+# and the segment numbers are two separate records, and they agree.
 PARTIAL = [t(0, 42, segments="5", source="00801.mpls"),
            t(1, 42, segments="6", source="00802.mpls"),
            t(2, 42, segments="99", source="00803.mpls"),
            t(9, 126, 11.0, segments="5,6", source="00700.mpls", chapters=18)]
 f4 = tv.analyse(PARTIAL, FLOOR)
-check("falls through to playlist numbering", f4["order_source"], "source")
-check("and gets the right answer anyway",
-      [e["index"] for e in f4["episodes"]], [0, 1, 2])
+check("placed past the play-all, trusted",
+      ([e["index"] for e in f4["episodes"]], f4["order_source"], f4["confidence"]),
+      ([0, 1, 2], "segments", "high"))
+check("and the user is told", f4["beyond_play_all"], [2])
+
+print("...and only shows its guess when the two records disagree")
+# The same, but the episode past the play-all has a playlist number from before the
+# run. One record says "last", the other "first": not a fact, so not trusted.
+DISAGREE2 = [t(0, 42, segments="5", source="00801.mpls"),
+             t(1, 42, segments="6", source="00802.mpls"),
+             t(2, 42, segments="99", source="00800.mpls"),
+             t(9, 126, 11.0, segments="5,6", source="00700.mpls", chapters=18)]
+f4d = tv.analyse(DISAGREE2, FLOOR)
+check("still all three episodes", sorted(e["index"] for e in f4d["episodes"]), [0, 1, 2])
+check("but at medium confidence, so it is checked", f4d["confidence"], "medium")
+
+print("a map whose segments aren't in order is not extended")
+SCRAMBLED = [t(0, 42, segments="7", source="00801.mpls"),
+             t(1, 42, segments="5", source="00802.mpls"),
+             t(2, 42, segments="99", source="00803.mpls"),
+             t(9, 126, 11.0, segments="7,5", source="00700.mpls", chapters=18)]
+f4s = tv.analyse(SCRAMBLED, FLOOR)
+check("falls through to playlist numbering", f4s["order_source"], "source")
+
+print("an episode-length title outside a complete play-all is an extra")
+# Samurai Jack season 2's shape: the play-all runs exactly as long as the episodes it
+# holds, so the map is whole and the title it leaves out is a bonus, not episode 4.
+OUTSIDE = [t(0, 22, segments="5", source="00801.mpls"),
+           t(1, 22, segments="6", source="00802.mpls"),
+           t(2, 22, segments="7", source="00800.mpls"),
+           t(3, 21, segments="99", source="02630.m2ts"),
+           t(9, 66, 9.0, segments="5,6,7", source="00820.mpls", chapters=12)]
+f4b = tv.analyse(OUTSIDE, FLOOR)
+check("three episodes, ordered by the play-all",
+      ([e["index"] for e in f4b["episodes"]], f4b["order_source"]), ([0, 1, 2], "segments"))
+check("and the outsider is offered as an extra",
+      (f4b["outside_play_all"], [e["index"] for e in f4b["extras"]]), ([3], [3]))
 
 print("no signal at all admits it")
 BARE = [t(0, 42), t(1, 42), t(2, 42)]
@@ -178,8 +264,21 @@ for label, want in [("THE_WIRE_S01_D03", (1, 3)),
                     ("BREAKING_BAD_SEASON_2_DISC_3", (2, 3)),
                     ("FIREFLY_DISC_1", (None, 1)),
                     ("GOT_S3_D2", (3, 2)),
-                    ("BLADE_RUNNER", (None, None))]:
+                    ("BLADE_RUNNER", (None, None)),
+                    # The other words box sets use for a season, and number words.
+                    ("Avatar_Book_1_Disc_1", (1, 1)),
+                    ("Avatar: The Last Airbender Book One: Water Disc 1", (1, 1)),
+                    ("Doctor_Who_Series_3_Disc_2", (3, 2)),
+                    ("FUTURAMA_VOL_4", (4, None)),
+                    ("Samurai Jack - The Complete First Season", (1, None)),
+                    ("FRIENDS_S10", (10, None))]:
     check(label, tv.season_from_label(label), want)
+check("the show is what comes before the season, subtitle and all left behind",
+      tv.series_name_from_label("Avatar: The Last Airbender Book One: Water Disc 1"),
+      "Avatar: The Last Airbender")
+check("...and \"The Complete\" is not part of a name",
+      tv.series_name_from_label("Samurai Jack - The Complete First Season"),
+      "Samurai Jack")
 check("series name is cleaned of the markers",
       tv.series_name_from_label("BREAKING_BAD_SEASON_2_DISC_3"), "Breaking Bad")
 check("...and of the disc marker alone",

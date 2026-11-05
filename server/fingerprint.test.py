@@ -5,7 +5,11 @@ The same DVD was ripped twice in one night because its first fingerprint was has
 a title scan that had returned nothing -- silently -- and its second from the real
 titles. Two fingerprints, one disc, and the duplicate check had nothing to match. A
 fingerprint built from the label alone is not a weaker fingerprint, it is a different
-one, so a scan that comes back empty has to be a refusal, not a hash.
+one, so a scan that fails has to be a refusal, not a hash.
+
+A scan that *finishes* and finds no titles is different: that is a data disc (a game,
+a disc of files), saved as an ISO image, and its size is what separates one from the
+next. With no size either, there is nothing to identify it by, and it is refused.
 
 Run: python3 server/fingerprint.test.py
 """
@@ -49,10 +53,16 @@ rip.read_titles = lambda device, disc=None, on_progress=None: [
 want = hashlib.sha1(b"POKEMON_MEWTWO_RETURNS|DVD-R|0:3777|1:622").hexdigest()
 check("label, media and every title, in order", rip.fingerprint(drive), want)
 
-print("a scan that finds nothing is not an identity")
+print("a scan that finds nothing is a data disc, known by its size")
 rip.read_titles = lambda device, disc=None, on_progress=None: []
+want = hashlib.sha1(b"POKEMON_MEWTWO_RETURNS|DVD-R|bytes:3636133888").hexdigest()
+check("label, media and the disc's size", rip.fingerprint(drive), want)
+check("two data discs of different sizes are two discs",
+      rip.fingerprint(dict(drive, size_bytes=1)) != want, True)
+
+print("a scan that finds nothing on a disc of no known size is not an identity")
 try:
-    got = rip.fingerprint(drive)
+    got = rip.fingerprint(dict(drive, size_bytes=0))
 except rip.UnreadableDisc as e:
     got = e
 check("it refuses", isinstance(got, rip.UnreadableDisc), True)
@@ -75,7 +85,7 @@ check("it refuses", isinstance(got, rip.UnreadableDisc), True)
 print("putting the disc in is told the same thing")
 db.init()
 db.set("setup_complete", True)
-rip.read_titles = lambda device, disc=None, on_progress=None: []
+rip.read_titles = _dies
 job_id, why = rip.enqueue()
 check("no job was queued", job_id, None)
 contains("the reason is the scan", why, "read")

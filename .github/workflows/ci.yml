@@ -240,6 +240,27 @@ jobs:
         run: |
           python server/cancel-mid-flight.test.py
 
+      # Season discs. Detection against the mock disc and against real discs' scans
+      # (fixtures/discs -- a Blu-ray whose .mpls order lies, read right by its play-all),
+      # then a whole season through every stage. None of these ran in CI until
+      # 2026-10-12, which is how a film with two featurettes reading as a season shipped.
+      - name: Season discs are read and ripped as seasons
+        run: |
+          python server/tv-detect.test.py
+          python server/tv-realdisc.test.py
+          python server/tv-pipeline.test.py
+
+      # Auto Rip's per-kind rows (rip / show first / leave alone), film and TV extras,
+      # and data discs saved as ISO images, each through the whole pipeline.
+      - name: Each kind of disc does what its Auto Rip row says
+        run: python server/autorip-kinds.test.py
+
+      # The thermal guard against a fake /sys, under the runner's dash -- the shell the
+      # box runs it with: steps down hot, up cool, rip ceiling and two cores only while
+      # ripping, and the floor even with the setting off.
+      - name: The box keeps itself cool
+        run: python packaging/thermal.test.py
+
       # Music CDs, through the real tools: cd-paranoia reading a synthesized disc image,
       # cd-info reading its CD-Text, flac and lame encoding, bsdtar copying a data CD.
       # Nothing here had a CD drive when it was written, so the tools themselves are the
